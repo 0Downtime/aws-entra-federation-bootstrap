@@ -23,6 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$env:AWS_PAGER = ''
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath 'entra-aws-federation.local.json'
@@ -53,10 +54,12 @@ function Get-ManagementProfile {
     param([string]$RequestedProfile)
 
     if (-not [string]::IsNullOrWhiteSpace($RequestedProfile)) {
+        Write-Host "Validating AWS management profile '$RequestedProfile'..."
         $identity = Invoke-AwsJson -Arguments @('sts', 'get-caller-identity', '--profile', $RequestedProfile, '--output', 'json')
         return [pscustomobject]@{ Name = $RequestedProfile; AccountId = [string]$identity.Account }
     }
 
+    Write-Host 'Discovering AWS profiles with Organizations access...'
     $profiles = @(aws configure list-profiles 2>$null)
     $candidates = [Collections.Generic.List[object]]::new()
     foreach ($profile in $profiles) {
@@ -105,8 +108,12 @@ function Get-IdentityCenterRegion {
         [string]$FallbackRegion
     )
 
-    if (-not [string]::IsNullOrWhiteSpace($IdentityCenterRegion)) { return $IdentityCenterRegion }
+    if (-not [string]::IsNullOrWhiteSpace($IdentityCenterRegion)) {
+        Write-Host "Using configured IAM Identity Center region '$IdentityCenterRegion'."
+        return $IdentityCenterRegion
+    }
 
+    Write-Host 'Searching AWS regions for the IAM Identity Center instance...'
     $regions = [Collections.Generic.List[string]]::new()
     if (-not [string]::IsNullOrWhiteSpace($FallbackRegion)) { $regions.Add($FallbackRegion) }
     try {
@@ -123,6 +130,7 @@ function Get-IdentityCenterRegion {
 
     $instances = [Collections.Generic.List[object]]::new()
     foreach ($region in $regions) {
+        Write-Host "  Checking $region..."
         try {
             $response = Invoke-AwsJson -Arguments @('sso-admin', 'list-instances', '--profile', $Profile, '--region', $region, '--output', 'json')
             foreach ($instance in @($response.Instances)) {
@@ -146,7 +154,10 @@ function Get-IdentityCenterRegion {
 function Get-StartUrlValue {
     param([string]$Profile)
 
-    if (-not [string]::IsNullOrWhiteSpace($StartUrl)) { return $StartUrl }
+    if (-not [string]::IsNullOrWhiteSpace($StartUrl)) {
+        Write-Host 'Using configured IAM Identity Center start URL.'
+        return $StartUrl
+    }
     $configured = Read-OptionalCommandOutput -Command 'aws' -Arguments @('configure', 'get', 'sso_start_url', '--profile', $Profile)
     if (-not [string]::IsNullOrWhiteSpace($configured)) { return $configured }
 
@@ -159,7 +170,11 @@ function Get-StartUrlValue {
 }
 
 function Get-TenantIdValue {
-    if (-not [string]::IsNullOrWhiteSpace($TenantId)) { return $TenantId }
+    if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+        Write-Host 'Using configured Entra tenant ID.'
+        return $TenantId
+    }
+    Write-Host 'Discovering Entra tenant ID...'
     if (Get-Command az -ErrorAction SilentlyContinue) {
         $tenant = Read-OptionalCommandOutput -Command 'az' -Arguments @('account', 'show', '--query', 'tenantId', '--output', 'tsv')
         if (-not [string]::IsNullOrWhiteSpace($tenant)) { return $tenant }
@@ -168,7 +183,11 @@ function Get-TenantIdValue {
 }
 
 function Get-GraphClientIdValue {
-    if (-not [string]::IsNullOrWhiteSpace($GraphClientId)) { return $GraphClientId }
+    if (-not [string]::IsNullOrWhiteSpace($GraphClientId)) {
+        Write-Host 'Using configured Graph automation client ID.'
+        return $GraphClientId
+    }
+    Write-Host "Discovering Graph app '$GraphAutomationAppDisplayName'..."
     if (Get-Command az -ErrorAction SilentlyContinue) {
         $appsJson = Read-OptionalCommandOutput -Command 'az' -Arguments @('ad', 'app', 'list', '--display-name', $GraphAutomationAppDisplayName, '--output', 'json')
         if (-not [string]::IsNullOrWhiteSpace($appsJson)) {
@@ -181,7 +200,11 @@ function Get-GraphClientIdValue {
 }
 
 function Get-CertificateThumbprintValue {
-    if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { return $CertificateThumbprint }
+    if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+        Write-Host 'Using configured certificate thumbprint.'
+        return $CertificateThumbprint
+    }
+    Write-Host "Searching the Windows certificate stores for '$CertificateSubjectPattern'..."
 
     $certificates = @(
         Get-ChildItem -Path 'Cert:\CurrentUser\My', 'Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
