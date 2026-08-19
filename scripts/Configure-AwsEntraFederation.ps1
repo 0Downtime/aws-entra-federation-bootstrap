@@ -2,7 +2,7 @@
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
-    [ValidateSet('Validate', 'Plan', 'Apply', 'RotateScimToken')]
+    [ValidateSet('Validate', 'Plan', 'PrepareMetadata', 'Apply', 'RotateScimToken')]
     [string]$Mode = 'Validate',
 
     [Parameter(Mandatory = $true)]
@@ -14,6 +14,7 @@ param(
     [string]$ScimEndpoint,
     [System.Security.SecureString]$ScimToken,
     [switch]$ApproveIdentitySourceChange,
+    [switch]$EnsureEntraMetadata,
     [switch]$ApplyTerraform,
     [switch]$ForceManagedProfiles,
     [string]$OutputPath
@@ -505,6 +506,81 @@ function Ensure-EntraSamlSigningCertificate {
     return $newThumbprint
 }
 
+function Ensure-EntraIdentityProviderMetadata {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)]$ServicePrincipal,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace([string]$ServicePrincipal.appId)) {
+        throw 'The AWS Entra enterprise application did not expose an application ID for federation metadata retrieval.'
+    }
+
+    $metadataUri = "https://login.microsoftonline.com/$($Config.Entra.tenantId)/federationmetadata/2007-06/federationmetadata.xml?appid=$($ServicePrincipal.appId)"
+    if ($Mode -in @('Validate', 'Plan')) {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            return Read-AndValidateMetadata -Path $Path -Kind 'Entra identity-provider'
+        }
+        if ($Mode -eq 'Plan') {
+            $script:Result.warnings += "Entra identity-provider metadata would be downloaded to $Path from the tenant federation metadata endpoint."
+            return $null
+        }
+        throw "Entra identity-provider metadata was not found: $Path. Rerun Apply with -EnsureEntraMetadata after the SAML application and signing certificate are configured."
+    }
+
+    if (-not $EnsureEntraMetadata) {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            return Read-AndValidateMetadata -Path $Path -Kind 'Entra identity-provider'
+        }
+        throw "Entra identity-provider metadata was not found: $Path. Rerun Apply with -EnsureEntraMetadata to download it automatically."
+    }
+
+    $parent = Split-Path -Parent $Path
+    if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    $temporaryPath = Join-Path $env:TEMP ("entra-idp-metadata-{0}.xml" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        Write-Information "Downloading Entra identity-provider metadata for '$($Config.Entra.applicationDisplayName)'..." -InformationAction Continue
+        $metadata = $null
+        $downloadError = $null
+        for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+                Invoke-WebRequest -Uri $metadataUri -OutFile $temporaryPath -ErrorAction Stop
+                $metadata = Read-AndValidateMetadata -Path $temporaryPath -Kind 'Entra identity-provider'
+                break
+            }
+            catch {
+                $downloadError = $_.Exception
+                if ($attempt -eq 5) { throw }
+                $delay = [int][Math]::Pow(2, $attempt - 1)
+                Write-Information "Entra metadata is not ready yet; retrying in $delay second(s)..." -InformationAction Continue
+                Start-Sleep -Seconds $delay
+            }
+        }
+        if ($null -eq $metadata) {
+            throw $downloadError
+        }
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            Copy-Item -LiteralPath $Path -Destination "$Path.bak" -Force
+        }
+        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+        $metadata.Path = (Resolve-Path -LiteralPath $Path).Path
+        $script:Result.entra.identityProviderMetadata = [ordered]@{
+            path = $metadata.Path
+            source = $metadataUri
+            singleSignOnServiceCount = @($metadata.SingleSignOnServices).Count
+            refreshed = $true
+        }
+        return $metadata
+    }
+    catch {
+        throw "Could not download or validate Entra identity-provider metadata from ${metadataUri}: $($_.Exception.Message)"
+    }
+    finally {
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Resolve-EntraGroups {
     param($Config)
 
@@ -801,17 +877,17 @@ try {
 
     $awsMetadataPath = if ($AwsServiceProviderMetadataPath) { $AwsServiceProviderMetadataPath } else { [string](Get-ConfigValue -Object $config.Aws -Name 'serviceProviderMetadataPath') }
     $entraMetadataPath = if ($EntraIdentityProviderMetadataPath) { $EntraIdentityProviderMetadataPath } else { [string](Get-ConfigValue -Object $config.Entra -Name 'identityProviderMetadataPath') }
-    if ($Mode -in @('Validate', 'Plan', 'Apply')) {
+    if ($Mode -in @('Validate', 'Plan', 'PrepareMetadata', 'Apply')) {
         Require-Value -Name 'AWS service-provider metadata path' -Value $awsMetadataPath
         Require-Value -Name 'Entra identity-provider metadata path' -Value $entraMetadataPath
     }
+    if (-not (Test-Path -LiteralPath $awsMetadataPath -PathType Leaf)) {
+        throw "AWS service-provider metadata was not found: $awsMetadataPath. Download it once from IAM Identity Center's external identity provider setup under Service provider metadata, then place it at this path. AWS does not expose this download through the public sso-admin API."
+    }
     $awsMetadata = Read-AndValidateMetadata -Path $awsMetadataPath -Kind 'AWS service-provider'
-    $entraMetadata = Read-AndValidateMetadata -Path $entraMetadataPath -Kind 'Entra identity-provider'
-    if ($null -ne $entraMetadata) {
-        $script:Result.entra.identityProviderMetadata = [ordered]@{
-            path = $entraMetadata.Path
-            singleSignOnServiceCount = @($entraMetadata.SingleSignOnServices).Count
-        }
+    $entraMetadata = $null
+    if (Test-Path -LiteralPath $entraMetadataPath -PathType Leaf) {
+        $entraMetadata = Read-AndValidateMetadata -Path $entraMetadataPath -Kind 'Entra identity-provider'
     }
 
     if ($Mode -in @('Apply', 'RotateScimToken') -and -not $ApproveIdentitySourceChange) {
@@ -822,22 +898,37 @@ try {
     $servicePrincipal = Resolve-EntraApplication -Config $config -AwsMetadata $awsMetadata
     if ($servicePrincipal.PSObject.Properties.Name -contains 'Planned') {
         $script:Result.warnings += 'Entra gallery application creation is planned; rerun Apply after the application exists.'
+        if ($null -eq $entraMetadata) {
+            $script:Result.warnings += "Entra identity-provider metadata will be downloaded to $entraMetadataPath during Apply with -EnsureEntraMetadata."
+        }
     }
     else {
         $null = Ensure-EntraSamlSigningCertificate -Config $config -ServicePrincipal $servicePrincipal
-        $groups = Resolve-EntraGroups -Config $config
-        $assignments = Ensure-EntraGroupAssignments -ServicePrincipal $servicePrincipal -ResolvedGroups $groups
-        $null = Configure-EntraProvisioning -ServicePrincipal $servicePrincipal -Scim $bootstrap
-        $assignments = Resolve-AwsIdentityStoreGroups -Config $config -Assignments $assignments
-        $assignments = Resolve-AccountIds -Config $config -Assignments $assignments
-
-        if ($ApplyTerraform -and $Mode -eq 'Apply') {
-            $tfvars = Write-TerraformFederationVariables -Config $config -Assignments $assignments
-            Write-Information "Applying governance federation assignments from $tfvars..." -InformationAction Continue
-            & terraform -chdir=(Join-Path $PSScriptRoot '..\stages\02-governance') apply -auto-approve
-            if ($LASTEXITCODE -ne 0) { throw 'Terraform governance apply failed.' }
+        $entraMetadata = Ensure-EntraIdentityProviderMetadata -Config $config -ServicePrincipal $servicePrincipal -Path $entraMetadataPath
+        if ($null -ne $entraMetadata) {
+            $script:Result.entra.identityProviderMetadata = [ordered]@{
+                path = $entraMetadata.Path
+                singleSignOnServiceCount = @($entraMetadata.SingleSignOnServices).Count
+            }
         }
-        Add-ManagedAwsCliProfiles -Config $config -Assignments $assignments | Out-Null
+        if ($Mode -eq 'PrepareMetadata') {
+            $script:Result.warnings += 'Metadata preparation complete. Complete the one-time AWS external identity-source cutover, then rerun Apply with the SCIM endpoint and SecureString token.'
+        }
+        else {
+            $groups = Resolve-EntraGroups -Config $config
+            $assignments = Ensure-EntraGroupAssignments -ServicePrincipal $servicePrincipal -ResolvedGroups $groups
+            $null = Configure-EntraProvisioning -ServicePrincipal $servicePrincipal -Scim $bootstrap
+            $assignments = Resolve-AwsIdentityStoreGroups -Config $config -Assignments $assignments
+            $assignments = Resolve-AccountIds -Config $config -Assignments $assignments
+
+            if ($ApplyTerraform -and $Mode -eq 'Apply') {
+                $tfvars = Write-TerraformFederationVariables -Config $config -Assignments $assignments
+                Write-Information "Applying governance federation assignments from $tfvars..." -InformationAction Continue
+                & terraform -chdir=(Join-Path $PSScriptRoot '..\stages\02-governance') apply -auto-approve
+                if ($LASTEXITCODE -ne 0) { throw 'Terraform governance apply failed.' }
+            }
+            Add-ManagedAwsCliProfiles -Config $config -Assignments $assignments | Out-Null
+        }
     }
 
     if ($Mode -in @('Apply', 'RotateScimToken')) {

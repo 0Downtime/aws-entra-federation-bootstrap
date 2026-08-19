@@ -16,6 +16,14 @@ Describe 'Configure-AwsEntraFederation.ps1 static safety checks' {
         $scriptText | Should -Match 'not \$ApproveIdentitySourceChange'
     }
 
+    It 'has a metadata-only preparation mode that does not require a SCIM token' {
+        $scriptText | Should -Match "ValidateSet\('Validate', 'Plan', 'PrepareMetadata', 'Apply', 'RotateScimToken'\)"
+        $scriptText | Should -Match 'EnsureEntraMetadata'
+        $scriptText | Should -Match 'federationmetadata/2007-06/federationmetadata.xml'
+        $scriptText | Should -Match 'Metadata preparation complete'
+        $scriptText | Should -Match 'AWS does not expose this download through the public sso-admin API'
+    }
+
     It 'uses DPAPI-backed secure storage and redacted output' {
         $scriptText | Should -Match 'ConvertFrom-SecureString'
         $scriptText | Should -Match 'SecretStorePath'
@@ -127,6 +135,8 @@ Describe 'Invoke-AwsEntraFederationBootstrap.ps1 onboarding orchestrator' {
         $orchestratorText | Should -Match 'Invoke-QuotaCheck'
         $orchestratorText | Should -Match 'Invoke-OrganizationBootstrap'
         $orchestratorText | Should -Match 'Invoke-Federation'
+        $orchestratorText | Should -Match "ValidateSet\('Validate', 'Plan', 'PrepareMetadata', 'Apply'\)"
+        $orchestratorText | Should -Match 'EnsureEntraMetadata'
     }
 
     It 'requires explicit approvals for every mutating boundary' {

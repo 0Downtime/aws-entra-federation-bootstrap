@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate', 'Plan', 'Apply')]
+    [ValidateSet('Validate', 'Plan', 'PrepareMetadata', 'Apply')]
     [string]$Mode = 'Validate',
 
     [Parameter(Mandatory = $true)]
@@ -18,6 +18,7 @@ param(
     [switch]$ApproveOrganizationChange,
     [switch]$ContinueAfterOrganizationApply,
     [switch]$ApproveIdentitySourceChange,
+    [switch]$EnsureEntraMetadata,
     [switch]$ApplyGovernance,
     [switch]$ApproveTerraform,
     [switch]$ForceManagedProfiles,
@@ -160,8 +161,8 @@ MANUAL AWS/ENTRA BOOTSTRAP CHECKLIST
 
 Complete these console steps before approving federation Apply:
   1. AWS IAM Identity Center: confirm the organization instance is enabled in the configured Identity Center region.
-  2. Entra enterprise applications: open the AWS IAM Identity Center application, select SAML, and configure the AWS ACS/reply URL and issuer shown by AWS.
-  3. Entra SAML signing: create or activate the signing certificate and download fresh IdP metadata after activation.
+  2. AWS IAM Identity Center: download the service-provider metadata from the external identity-provider setup and place it at the configured AWS metadata path. This is the one-time AWS artifact not exposed by the public sso-admin API.
+  3. Run the metadata-only preparation phase with `-Mode PrepareMetadata -EnsureEntraMetadata`; it configures SAML, creates or activates the Entra signing certificate, and downloads fresh Entra IdP metadata.
   4. AWS IAM Identity Center: Settings -> Identity source -> Change identity source -> External identity provider; upload the fresh Entra metadata and confirm the displayed ACS/issuer values before completing the cutover.
   5. Entra enterprise application: assign each configured group to the application.
   6. AWS IAM Identity Center: Settings -> Automatic provisioning; enable it and copy the SCIM endpoint and one-time token.
@@ -267,6 +268,10 @@ function Invoke-QuotaCheck {
 function Invoke-OrganizationBootstrap {
     param($Bootstrap)
 
+    if ($Mode -eq 'PrepareMetadata' -and $OrganizationMode -ne 'Skip') {
+        throw 'PrepareMetadata only supports OrganizationMode Skip; prepare federation metadata after the organization already exists.'
+    }
+
     if ($OrganizationMode -eq 'Skip') {
         $script:Result.phases.organization = [ordered]@{
             status = 'skipped'
@@ -333,6 +338,7 @@ function Invoke-Federation {
         Mode = $Mode
         ConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
         ApproveIdentitySourceChange = $ApproveIdentitySourceChange
+        EnsureEntraMetadata = $EnsureEntraMetadata
         ForceManagedProfiles = $ForceManagedProfiles
         OutputPath = $resultPath
     }
@@ -406,7 +412,15 @@ try {
 
     $scimArguments = Resolve-ScimArguments
     $federation = Invoke-Federation -ScimArguments $scimArguments
-    Test-ManualBootstrapEvidence -Federation $federation -Config $bootstrap.Config
+    if ($Mode -eq 'PrepareMetadata') {
+        $script:Result.phases.manualBootstrap = [ordered]@{
+            status = 'metadata-prepared'
+            nextStep = 'Complete the one-time AWS external identity-source cutover, then rerun with Mode Apply and the SCIM endpoint/token.'
+        }
+    }
+    else {
+        Test-ManualBootstrapEvidence -Federation $federation -Config $bootstrap.Config
+    }
 
     $defaultOutput = Join-Path $script:SecretStorePath 'bootstrap-last-result.json'
     Write-OnboardingResult -DefaultPath $defaultOutput
