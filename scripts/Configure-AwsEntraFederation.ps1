@@ -388,6 +388,121 @@ function Get-GraphCollection {
     return @($items)
 }
 
+function Get-GraphResourceId {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $id = [string](Get-ConfigValue -Object $Object -Name 'id')
+    if ([string]::IsNullOrWhiteSpace($id)) {
+        $additional = $Object.PSObject.Properties['AdditionalProperties']
+        if ($null -ne $additional -and $additional.Value -is [Collections.IDictionary] -and $additional.Value.Contains('id')) {
+            $id = [string]$additional.Value['id']
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($id)) {
+        $properties = @($Object.PSObject.Properties.Name) -join ', '
+        throw "Graph did not return an id for $Description. Returned properties: $properties"
+    }
+    return $id
+}
+
+function Normalize-GraphServicePrincipal {
+    param([Parameter(Mandatory = $true)]$ServicePrincipal)
+
+    $id = Get-GraphResourceId -Object $ServicePrincipal -Description 'the Entra service principal'
+    $idProperty = $ServicePrincipal.PSObject.Properties['id']
+    if ($null -eq $idProperty -or [string]::IsNullOrWhiteSpace([string]$idProperty.Value)) {
+        $ServicePrincipal | Add-Member -MemberType NoteProperty -Name id -Value $id -Force
+    }
+    return $ServicePrincipal
+}
+
+function Ensure-EntraApplicationSamlUrls {
+    param(
+        [Parameter(Mandatory = $true)]$ServicePrincipal,
+        [Parameter(Mandatory = $true)]$AwsMetadata
+    )
+
+    $appId = [string](Get-ConfigValue -Object $ServicePrincipal -Name 'appId')
+    if ([string]::IsNullOrWhiteSpace($appId)) {
+        throw 'The AWS Entra service principal did not expose its application ID; cannot configure SAML URLs.'
+    }
+
+    $encodedAppId = [uri]::EscapeDataString($appId)
+    $applications = @(Get-GraphCollection -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=appId%20eq%20'$encodedAppId'&`$select=id,appId,identifierUris,web")
+    if ($applications.Count -ne 1) {
+        throw "Expected exactly one Entra application object for appId $appId; found $($applications.Count)."
+    }
+
+    $application = $applications[0]
+    $applicationObjectId = Get-GraphResourceId -Object $application -Description "the AWS Entra application object for appId $appId"
+    $entityId = [string]$AwsMetadata.EntityId
+    $requiredRedirectUris = @($AwsMetadata.AssertionConsumerServices | ForEach-Object { [string]$_ } | Where-Object { $_ } | Select-Object -Unique)
+    if ([string]::IsNullOrWhiteSpace($entityId) -or $requiredRedirectUris.Count -eq 0) {
+        throw 'AWS service-provider metadata did not contain the SAML entity ID and at least one ACS URL required to configure the Entra application.'
+    }
+
+    $existingIdentifierUris = @(Get-ConfigValue -Object $application -Name 'identifierUris' -Default @() | ForEach-Object { [string]$_ } | Where-Object { $_ })
+    $identifierUris = [Collections.Generic.List[string]]::new()
+    foreach ($uri in $existingIdentifierUris) {
+        $identifierUris.Add($uri)
+    }
+    if (-not $identifierUris.Contains($entityId)) { $identifierUris.Add($entityId) }
+
+    $web = Get-ConfigValue -Object $application -Name 'web' -Default ([pscustomobject]@{})
+    $existingWebRedirectUris = @(Get-ConfigValue -Object $web -Name 'redirectUris' -Default @() | ForEach-Object { [string]$_ } | Where-Object { $_ })
+    $redirectUris = [Collections.Generic.List[string]]::new()
+    foreach ($uri in $existingWebRedirectUris) {
+        $redirectUris.Add($uri)
+    }
+    foreach ($uri in $requiredRedirectUris) {
+        if (-not $redirectUris.Contains($uri)) { $redirectUris.Add($uri) }
+    }
+
+    $identifierChanged = $entityId -notin $existingIdentifierUris
+    $redirectChanged = @($requiredRedirectUris | Where-Object { $_ -notin $existingWebRedirectUris }).Count -gt 0
+    $needsUpdate = $identifierChanged -or $redirectChanged
+    if ($Mode -notin @('Plan', 'Validate') -and $needsUpdate) {
+        $webPatch = [ordered]@{}
+        if ($web -is [Collections.IDictionary]) {
+            foreach ($key in $web.Keys) {
+                if ([string]$key -ne 'redirectUris' -and $null -ne $web[$key]) {
+                    $webPatch[[string]$key] = $web[$key]
+                }
+            }
+        }
+        else {
+            foreach ($property in @($web.PSObject.Properties)) {
+                if ($property.Name -notin @('redirectUris', 'AdditionalProperties') -and $null -ne $property.Value) {
+                    $webPatch[$property.Name] = $property.Value
+                }
+            }
+            $additionalWebProperties = $web.PSObject.Properties['AdditionalProperties']
+            if ($null -ne $additionalWebProperties -and $additionalWebProperties.Value -is [Collections.IDictionary]) {
+                foreach ($key in $additionalWebProperties.Value.Keys) {
+                    if ([string]$key -ne 'redirectUris' -and -not $webPatch.Contains([string]$key) -and $null -ne $additionalWebProperties.Value[$key]) {
+                        $webPatch[[string]$key] = $additionalWebProperties.Value[$key]
+                    }
+                }
+            }
+        }
+        $webPatch.redirectUris = @($redirectUris)
+        Invoke-GraphRequest -Method PATCH -Uri "https://graph.microsoft.com/v1.0/applications/$applicationObjectId" -Body @{
+            identifierUris = @($identifierUris)
+            web = $webPatch
+        } | Out-Null
+    }
+
+    $script:Result.entra.applicationObjectId = $applicationObjectId
+    $script:Result.entra.samlUrls = [ordered]@{
+        identifierUri = $entityId
+        redirectUriCount = $redirectUris.Count
+        status = if ($needsUpdate -and $Mode -notin @('Plan', 'Validate')) { 'merged' } elseif ($needsUpdate) { 'planned' } else { 'existing' }
+    }
+}
+
 function Resolve-EntraApplication {
     param($Config, $AwsMetadata)
 
@@ -436,10 +551,12 @@ function Resolve-EntraApplication {
         }
     }
 
-    $patch = @{ preferredSingleSignOnMode = 'saml'; appRoleAssignmentRequired = $true }
+    $servicePrincipal = Normalize-GraphServicePrincipal -ServicePrincipal $servicePrincipal
+
     if ($null -ne $AwsMetadata) {
-        $patch.replyUrls = @($AwsMetadata.AssertionConsumerServices)
+        Ensure-EntraApplicationSamlUrls -ServicePrincipal $servicePrincipal -AwsMetadata $AwsMetadata
     }
+    $patch = @{ preferredSingleSignOnMode = 'saml' }
     if ($Mode -notin @('Plan', 'Validate')) {
         Invoke-GraphRequest -Method PATCH -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($servicePrincipal.id)" -Body $patch | Out-Null
     }

@@ -24,6 +24,15 @@ Describe 'Configure-AwsEntraFederation.ps1 static safety checks' {
         $scriptText | Should -Match 'AWS does not expose this download through the public sso-admin API'
     }
 
+    It 'normalizes Graph IDs and merges SAML URLs on the application object' {
+        $scriptText | Should -Match 'Normalize-GraphServicePrincipal'
+        $scriptText | Should -Match 'AdditionalProperties'
+        $scriptText | Should -Match 'Ensure-EntraApplicationSamlUrls'
+        $scriptText | Should -Match 'applications.*identifierUris,web'
+        $scriptText | Should -Match 'redirectUris = @\(\$redirectUris\)'
+        $scriptText | Should -Not -Match '\$patch\.replyUrls'
+    }
+
     It 'uses DPAPI-backed secure storage and redacted output' {
         $scriptText | Should -Match 'ConvertFrom-SecureString'
         $scriptText | Should -Match 'SecretStorePath'
