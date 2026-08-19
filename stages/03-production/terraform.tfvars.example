@@ -1,0 +1,7 @@
+production_account_id = "222222222222"
+management_profile    = "management"
+production_region     = "us-east-1"
+secret_name           = "production/application"
+
+# Optional. Add only real workload or administration principal ARNs.
+# production_trusted_principal_arns = ["arn:aws:iam::222222222222:role/application-role"]

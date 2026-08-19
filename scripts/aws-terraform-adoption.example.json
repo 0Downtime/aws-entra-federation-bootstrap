@@ -1,0 +1,51 @@
+{
+  "aws": {
+    "managementProfile": "management",
+    "region": "us-east-1"
+  },
+  "terraform": {
+    "root": "..",
+    "01-organizationVarsFile": "stages/01-organization/terraform.tfvars",
+    "02-governanceVarsFile": "stages/02-governance/terraform.tfvars"
+  },
+  "organization": {
+    "id": null,
+    "accountQuotaRequestId": null,
+    "organizationalUnits": {
+      "security": {
+        "name": "Security",
+        "id": null
+      },
+      "infrastructure": {
+        "name": "Infrastructure",
+        "id": null
+      },
+      "workloads": {
+        "name": "Workloads",
+        "id": null
+      }
+    },
+    "accounts": {
+      "log_archive": {
+        "name": "log-archive",
+        "id": null
+      },
+      "production": {
+        "name": "production",
+        "id": null
+      }
+    }
+  },
+  "governance": {
+    "logArchiveBucketName": "existing-central-cloudtrail-bucket",
+    "cloudTrailName": "organization-cloudtrail",
+    "permissionSets": {
+      "security": {
+        "arn": "arn:aws:sso:::permissionSet/ssoins-example/ps-example"
+      },
+      "billing": {
+        "arn": "arn:aws:sso:::permissionSet/ssoins-example/ps-example"
+      }
+    }
+  }
+}

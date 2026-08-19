@@ -1,0 +1,27 @@
+management_account_id     = "000000000000"
+management_profile        = "management"
+management_region         = "us-east-1"
+organization_name         = "production-organization"
+organization_feature_set  = "ALL"
+create_member_accounts    = true
+
+organizational_units = {
+  security       = "Security"
+  infrastructure = "Infrastructure"
+  workloads      = "Workloads"
+}
+
+member_accounts = {
+  log_archive = {
+    name   = "log-archive"
+    email  = "replace-with-a-unique-log-archive-address@your-domain.example"
+    ou_key = "security"
+    tags   = {}
+  }
+  production = {
+    name   = "production"
+    email  = "replace-with-a-unique-production-address@your-domain.example"
+    ou_key = "workloads"
+    tags   = {}
+  }
+}

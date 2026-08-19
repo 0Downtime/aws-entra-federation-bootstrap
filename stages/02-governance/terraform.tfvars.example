@@ -1,0 +1,13 @@
+management_account_id   = "000000000000"
+log_archive_account_id  = "111111111111"
+organization_id         = "o-example1234"
+management_profile      = "management"
+management_region       = "us-east-1"
+identity_center_region  = "us-east-1"
+log_archive_bucket_name = "replace-with-a-globally-unique-log-archive-name"
+
+# Optional: set these after creating groups in IAM Identity Center.
+# sso_group_id = "group-id-from-identity-center"
+# sso_target_account_ids = ["000000000000", "111111111111", "222222222222"]
+# billing_group_id = "billing-group-id-from-identity-center"
+# billing_target_account_ids = ["000000000000"]

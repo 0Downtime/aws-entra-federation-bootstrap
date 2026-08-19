@@ -1,0 +1,4 @@
+management_account_id = "000000000000"
+profile               = "management"
+region                = "us-east-1"
+bucket_name           = "tfstate-aws-org-your-account-id"
