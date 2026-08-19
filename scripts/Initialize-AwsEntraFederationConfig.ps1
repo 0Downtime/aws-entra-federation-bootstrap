@@ -5,7 +5,7 @@ param(
     [ValidateSet('Plan', 'Initialize')]
     [string]$Mode = 'Plan',
 
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'entra-aws-federation.local.json'),
+    [string]$ConfigPath,
 
     [string]$ManagementProfile,
     [string]$ManagementAccountId,
@@ -23,6 +23,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+    $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath 'entra-aws-federation.local.json'
+}
 
 function Read-OptionalCommandOutput {
     param(
