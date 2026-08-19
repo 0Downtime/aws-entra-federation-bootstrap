@@ -18,6 +18,7 @@ $ErrorActionPreference = 'Stop'
 $script:Requirements = @(
     [pscustomobject]@{ Name = 'PowerShell 7.2+'; Kind = 'Command'; Command = 'pwsh'; WingetId = 'Microsoft.PowerShell'; Required = $true },
     [pscustomobject]@{ Name = 'AWS CLI v2'; Kind = 'Command'; Command = 'aws'; WingetId = 'Amazon.AWSCLI'; Required = $true },
+    [pscustomobject]@{ Name = 'Azure CLI'; Kind = 'Command'; Command = 'az'; WingetId = 'Microsoft.AzureCLI'; Required = $true },
     [pscustomobject]@{ Name = 'Terraform 1.5+'; Kind = 'Command'; Command = 'terraform'; WingetId = 'Hashicorp.Terraform'; Required = $true },
     [pscustomobject]@{ Name = 'Git'; Kind = 'Command'; Command = 'git'; WingetId = 'Git.Git'; Required = $true },
     [pscustomobject]@{ Name = 'Microsoft Graph Authentication module'; Kind = 'Module'; Module = 'Microsoft.Graph.Authentication'; Required = $true },

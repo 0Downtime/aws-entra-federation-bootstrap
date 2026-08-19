@@ -15,6 +15,9 @@ param(
     [string]$TenantId,
     [string]$GraphClientId,
     [string]$GraphAutomationAppDisplayName = 'AWS Entra Federation Automation',
+    [switch]$EnsureGraphApp,
+    [switch]$ApproveGraphAppChange,
+    [string]$CertificateThumbprint,
     [string]$CertificateSubjectPattern = 'AWS Entra Federation Automation',
     [ValidateRange(2, 3)]
     [int]$CertificateYears = 3,
@@ -51,6 +54,160 @@ function Invoke-AwsJson {
         throw "AWS CLI failed: $($output -join ' ')"
     }
     return (($output -join "`n") | ConvertFrom-Json)
+}
+
+function Invoke-AzJson {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $output = & az @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Azure CLI failed: $($output -join ' ')"
+    }
+    $raw = ($output -join "`n").Trim()
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+    return ($raw | ConvertFrom-Json)
+}
+
+function Invoke-AzJsonWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [ValidateRange(1, 6)][int]$MaxAttempts = 5
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            return Invoke-AzJson -Arguments $Arguments
+        }
+        catch {
+            if ($attempt -eq $MaxAttempts) { throw }
+            $delay = [int][Math]::Pow(2, $attempt - 1)
+            Write-Host "Azure CLI operation was not ready; retrying in $delay second(s)..."
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
+function Invoke-AzNoOutput {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $output = & az @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Azure CLI failed: $($output -join ' ')"
+    }
+}
+
+function Ensure-GraphAutomationApp {
+    $graphResourceAppId = '00000003-0000-0000-c000-000000000000'
+    $requiredPermissions = @(
+        'Application.ReadWrite.All',
+        'AppRoleAssignment.ReadWrite.All',
+        'Group.Read.All',
+        'Synchronization.ReadWrite.All'
+    )
+
+    if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+        throw 'Azure CLI is required for Graph app bootstrap. Run az login, then rerun Initialize.'
+    }
+
+    if ($Mode -eq 'Initialize' -and -not $ApproveGraphAppChange) {
+        throw "Graph app bootstrap requires explicit approval. Re-run with -ApproveGraphAppChange. This will create or reuse '$GraphAutomationAppDisplayName', create its service principal, grant Graph application permissions [$($requiredPermissions -join ', ')], and request tenant-wide admin consent."
+    }
+
+    $app = $null
+    if (-not [string]::IsNullOrWhiteSpace($GraphClientId)) {
+        Write-Host "Loading the specified Graph app '$GraphClientId'..."
+        $app = Invoke-AzJson -Arguments @('ad', 'app', 'show', '--id', $GraphClientId, '--output', 'json')
+    }
+    else {
+        Write-Host "Discovering Graph app '$GraphAutomationAppDisplayName'..."
+        $apps = @(Invoke-AzJson -Arguments @('ad', 'app', 'list', '--display-name', $GraphAutomationAppDisplayName, '--output', 'json'))
+        if ($apps.Count -gt 1) {
+            throw "Multiple Entra app registrations named '$GraphAutomationAppDisplayName' were found. Supply -GraphClientId explicitly."
+        }
+        if ($apps.Count -eq 1) { $app = $apps[0] }
+    }
+
+    if ($null -eq $app) {
+        if ($Mode -ne 'Initialize') {
+            Write-Host "Plan: create Entra app '$GraphAutomationAppDisplayName'."
+            return [pscustomobject]@{ AppId = '<graph-app-created-during-initialize>'; ObjectId = $null; RequiredPermissions = $requiredPermissions; Created = $true }
+        }
+
+        Write-Host "Creating Entra app '$GraphAutomationAppDisplayName'..."
+        $app = Invoke-AzJson -Arguments @(
+            'ad', 'app', 'create',
+            '--display-name', $GraphAutomationAppDisplayName,
+            '--sign-in-audience', 'AzureADMyOrg',
+            '--output', 'json'
+        )
+    }
+
+    $appId = [string]$app.appId
+    if ([string]::IsNullOrWhiteSpace($appId)) { throw 'The Entra app response did not contain an appId.' }
+
+    $servicePrincipal = $null
+    try {
+        $servicePrincipal = Invoke-AzJson -Arguments @('ad', 'sp', 'show', '--id', $appId, '--output', 'json')
+    }
+    catch {
+        if ($Mode -ne 'Initialize') {
+            Write-Host "Plan: create the service principal for app $appId."
+        }
+        else {
+            Write-Host "Creating the service principal for app $appId..."
+            $servicePrincipal = Invoke-AzJsonWithRetry -Arguments @('ad', 'sp', 'create', '--id', $appId, '--output', 'json')
+        }
+    }
+
+    if ($Mode -ne 'Initialize') {
+        try {
+            $graphServicePrincipal = Invoke-AzJson -Arguments @('ad', 'sp', 'show', '--id', $graphResourceAppId, '--output', 'json')
+            $roleNames = @($graphServicePrincipal.appRoles | Where-Object { $_.value -in $requiredPermissions -and $_.allowedMemberTypes -contains 'Application' } | ForEach-Object { [string]$_.value })
+            $missingRoleNames = @($requiredPermissions | Where-Object { $_ -notin $roleNames })
+            if ($missingRoleNames.Count -gt 0) { throw "Microsoft Graph does not expose the expected app roles: $($missingRoleNames -join ', ')." }
+            Write-Host "Plan: ensure Graph application permissions [$($requiredPermissions -join ', ')] and tenant-wide admin consent."
+        }
+        catch {
+            Write-Host "Plan: Graph permission discovery will run during Initialize ($($_.Exception.Message))."
+        }
+        return [pscustomobject]@{ AppId = $appId; ObjectId = [string]$app.id; RequiredPermissions = $requiredPermissions; Created = $false }
+    }
+
+    Write-Host 'Resolving Microsoft Graph application-role IDs...'
+    $graphServicePrincipal = Invoke-AzJsonWithRetry -Arguments @('ad', 'sp', 'show', '--id', $graphResourceAppId, '--output', 'json')
+    $roles = @($graphServicePrincipal.appRoles | Where-Object { $_.value -in $requiredPermissions -and $_.allowedMemberTypes -contains 'Application' } | ForEach-Object {
+        [pscustomobject]@{ Name = [string]$_.value; Id = [string]$_.id }
+    })
+    $missingRoleNames = @($requiredPermissions | Where-Object { $_ -notin @($roles | Select-Object -ExpandProperty Name) })
+    if ($missingRoleNames.Count -gt 0) {
+        throw "Microsoft Graph did not expose these application roles: $($missingRoleNames -join ', ')."
+    }
+
+    $permissionRequests = $null
+    try {
+        $permissionRequests = @(Invoke-AzJson -Arguments @('ad', 'app', 'permission', 'list', '--id', $appId, '--output', 'json'))
+    }
+    catch {
+        $permissionRequests = @()
+    }
+    $existingResourceAccess = @($permissionRequests | Where-Object { [string]$_.resourceAppId -eq $graphResourceAppId } | ForEach-Object { @($_.resourceAccess) })
+    $missingRoles = @($roles | Where-Object { $roleId = [string]$_.Id; $existingResourceAccess.id -notcontains $roleId })
+
+    if ($missingRoles.Count -gt 0) {
+        $permissionArguments = @('ad', 'app', 'permission', 'add', '--id', $appId, '--api', $graphResourceAppId, '--api-permissions')
+        $permissionArguments += @($missingRoles | ForEach-Object { "{0}=Role" -f $_.Id })
+        $permissionArguments += @('--output', 'none')
+        Write-Host "Adding missing Graph application permissions: $($missingRoles.Name -join ', ')..."
+        Invoke-AzNoOutput -Arguments $permissionArguments
+    }
+    else {
+        Write-Host 'All required Graph application permissions are already requested.'
+    }
+
+    Write-Host 'Granting tenant-wide admin consent for the Graph application permissions...'
+    Invoke-AzNoOutput -Arguments @('ad', 'app', 'permission', 'admin-consent', '--id', $appId, '--output', 'none')
+    Write-Host "Graph app bootstrap complete. Client ID: $appId"
+    return [pscustomobject]@{ AppId = $appId; ObjectId = [string]$app.id; RequiredPermissions = $requiredPermissions; Created = $false }
 }
 
 function Get-ManagementProfile {
@@ -186,6 +343,10 @@ function Get-TenantIdValue {
 }
 
 function Get-GraphClientIdValue {
+    if ($EnsureGraphApp) {
+        $graphApp = Ensure-GraphAutomationApp
+        return [string]$graphApp.AppId
+    }
     if (-not [string]::IsNullOrWhiteSpace($GraphClientId)) {
         Write-Host 'Using configured Graph automation client ID.'
         return $GraphClientId
@@ -203,6 +364,8 @@ function Get-GraphClientIdValue {
 }
 
 function Get-CertificateThumbprintValue {
+    param([string]$ResolvedGraphClientId)
+
     if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
         Write-Host 'Using configured certificate thumbprint.'
         return $CertificateThumbprint
@@ -230,7 +393,7 @@ function Get-CertificateThumbprintValue {
         if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
             throw 'Azure CLI is required to append the public certificate to the Entra app. Run az login, then rerun Initialize.'
         }
-        if ([string]::IsNullOrWhiteSpace($GraphClientId)) {
+        if ([string]::IsNullOrWhiteSpace($ResolvedGraphClientId) -or $ResolvedGraphClientId -like '<*') {
             throw 'GraphClientId is required to register the generated certificate.'
         }
 
@@ -257,7 +420,7 @@ function Get-CertificateThumbprintValue {
 
             Write-Host 'Appending the public certificate to the Entra app without removing existing credentials...'
             & az ad app credential reset `
-                --id $GraphClientId `
+                --id $ResolvedGraphClientId `
                 --cert "@$pemPath" `
                 --append `
                 --years $CertificateYears `
@@ -298,7 +461,7 @@ try {
     $startUrlValue = Get-StartUrlValue -Profile $profile.Name
     $tenantValue = Get-TenantIdValue
     $clientValue = Get-GraphClientIdValue
-    $thumbprintValue = Get-CertificateThumbprintValue
+    $thumbprintValue = Get-CertificateThumbprintValue -ResolvedGraphClientId $clientValue
 
     if ([string]::IsNullOrWhiteSpace($GroupNamePrefix)) { throw 'GroupNamePrefix cannot be empty.' }
     if (-not (Test-Path -LiteralPath $MetadataDirectory -PathType Container)) {

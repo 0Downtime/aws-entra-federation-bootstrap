@@ -19,7 +19,7 @@ The automation refuses mutating federation modes unless the -ApproveIdentitySour
 
 ## 1. Prepare the Windows host
 
-Run the repository prerequisite bootstrap first. It is safe to run `Validate` repeatedly. `Install` uses winget for the command-line tools and installs the Graph authentication and Pester modules for the current user:
+Run the repository prerequisite bootstrap first. It is safe to run `Validate` repeatedly. `Install` uses winget for AWS CLI v2, Azure CLI, PowerShell 7, Terraform, and Git, then installs the Graph authentication and Pester modules for the current user:
 
 ~~~powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Validate
@@ -117,6 +117,15 @@ The app needs these Microsoft Graph application permissions:
 - AppRoleAssignment.ReadWrite.All
 - Group.Read.All
 - Synchronization.ReadWrite.All
+
+The initializer can perform this app bootstrap through the signed-in Azure CLI identity. Run `az login` with the Global Administrator account that is authorized to grant tenant-wide consent, then use `-EnsureGraphApp -ApproveGraphAppChange`. The command creates or reuses the dedicated app and service principal, adds only the four permissions above, and executes `az ad app permission admin-consent`. The approval switch is intentionally mandatory for `Initialize` because this is a tenant-wide security change. The personal Global Administrator account is not stored in the configuration and is not used for runtime Graph automation.
+
+```powershell
+az login
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Initialize-AwsEntraFederationConfig.ps1 -Mode Initialize -ManagementProfile management-prod -ManagementAccountId 000000000000 -AwsRegion us-east-1 -IdentityCenterRegion us-east-1 -StartUrl "https://d-xxxxxxxxxx.awsapps.com/start" -GroupNamePrefix PROD-AWS -EnsureGraphApp -ApproveGraphAppChange -EnsureCertificate -CertificateYears 3
+```
+
+The operation is idempotent. Existing app credentials are preserved, and the generated certificate's private key remains in the current Windows user's certificate store.
 
 Grant tenant-wide admin consent in Entra under the app registration's API permissions page. Verify the certificate thumbprint in the local JSON matches the certificate containing the private key:
 

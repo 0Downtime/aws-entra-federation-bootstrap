@@ -40,6 +40,7 @@ Describe 'Install-AwsEntraFederationPrerequisites.ps1' {
         $prerequisiteText | Should -Match 'Install-WingetPackage'
         $prerequisiteText | Should -Match 'Microsoft.PowerShell'
         $prerequisiteText | Should -Match 'Amazon.AWSCLI'
+        $prerequisiteText | Should -Match 'Microsoft.AzureCLI'
         $prerequisiteText | Should -Match 'Hashicorp.Terraform'
         $prerequisiteText | Should -Match 'Microsoft.Graph.Authentication'
         $prerequisiteText | Should -Match 'Pester'
@@ -68,6 +69,20 @@ Describe 'Initialize-AwsEntraFederationConfig.ps1' {
         $initializerText | Should -Match '--append'
         $initializerText | Should -Match 'New-SelfSignedCertificate'
         $initializerText | Should -Not -Match '(?im)^\s*\$?(scimToken|clientSecret|privateKey|aws_secret_access_key|password)\s*='
+    }
+
+    It 'supports explicit, idempotent Graph app bootstrap with tenant-wide consent' {
+        $initializerText | Should -Match 'EnsureGraphApp'
+        $initializerText | Should -Match 'ApproveGraphAppChange'
+        $initializerText | Should -Match 'Application\.ReadWrite\.All'
+        $initializerText | Should -Match 'AppRoleAssignment\.ReadWrite\.All'
+        $initializerText | Should -Match 'Group\.Read\.All'
+        $initializerText | Should -Match 'Synchronization\.ReadWrite\.All'
+        $initializerText | Should -Match 'ad.*app.*permission.*admin-consent'
+        $initializerText | Should -Match 'ad.*sp.*create'
+        $initializerText | Should -Match 'permissionRequests'
+        $initializerText | Should -Match 'missingRoles'
+        $initializerText | Should -Match 'Re-run with -ApproveGraphAppChange'
     }
 }
 
