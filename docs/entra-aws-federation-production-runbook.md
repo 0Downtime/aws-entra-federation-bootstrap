@@ -22,8 +22,9 @@ The automation refuses mutating federation modes unless the -ApproveIdentitySour
 Run the repository prerequisite bootstrap first. It is safe to run `Validate` repeatedly. `Install` uses winget for the command-line tools and installs the Graph authentication and Pester modules for the current user:
 
 ~~~powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Validate
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Install -WingetScope User
 pwsh -NoProfile -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Validate
-pwsh -NoProfile -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Install -WingetScope User
 ~~~
 
 For machine-wide winget installs, use an elevated PowerShell prompt and `-WingetScope Machine`. If `winget` is unavailable, install Microsoft's App Installer package first. The script does not create AWS credentials, Entra app registrations, certificates, SCIM tokens, or IAM Identity Center assignments.

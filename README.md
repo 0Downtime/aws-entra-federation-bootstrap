@@ -139,8 +139,9 @@ The repository includes `scripts/Configure-AwsEntraFederation.ps1` and an exampl
 Bootstrap or validate the Windows prerequisites. `Validate` is read-only; `Install` uses winget for AWS CLI v2, Terraform, PowerShell 7, and Git, then installs the required PowerShell modules for the current user. Run `Install` from an elevated prompt with `-WingetScope Machine` if machine-wide installation is preferred:
 
 ```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Validate
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Install -WingetScope User
 pwsh -NoProfile -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Validate
-pwsh -NoProfile -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Install -WingetScope User
 ```
 
 The prerequisite script does not create AWS credentials, Entra app registrations, certificates, SCIM tokens, or IAM Identity Center assignments. Those are intentionally validated or performed by the onboarding workflow.
