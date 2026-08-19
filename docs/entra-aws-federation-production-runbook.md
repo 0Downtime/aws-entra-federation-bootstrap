@@ -92,7 +92,7 @@ Set these values for the target environment:
 - entra.tenantId, entra.clientId, and entra.certificateThumbprint.
 - entra.applicationDisplayName, normally AWS IAM Identity Center.
 - entra.applicationTemplateId, if the current AWS gallery template ID is known.
-- accessMappings: unique Entra group names, Terraform permission-set names, and explicit account IDs or all-active-accounts.
+- entra.groupNamePrefix plus accessMappings: use `entraGroupSuffix` to derive unique Entra group names, Terraform permission-set names, and explicit account IDs or all-active-accounts. Existing configurations may continue using an explicit `entraGroup`.
 
 Do not put a SCIM token, private key, Graph secret, or password in this JSON file.
 
@@ -212,7 +212,7 @@ The current test checkpoint reached in the VM is 11 passing tests and zero failu
 
 Terraform remains the owner of permission-set definitions and AWS account assignments. The federation script only generates the group IDs and mapping consumed by the governance stage.
 
-For full AWS administrator access, use a dedicated Entra security group such as `AWS-Administrators`. Assign the group to the AWS enterprise application so assignment-based SCIM provisioning includes it, then configure an access mapping with `permissionSet: "AdministratorAccess"` and the desired account selector. The governance stage creates or adopts the `AdministratorAccess` permission set and attaches the AWS-managed `arn:aws:iam::aws:policy/AdministratorAccess` policy. Keep this group separate from read-only groups and require an explicit approval for membership changes. `all-active-accounts` expands at runtime; rerun the bootstrap after new organization accounts become active.
+For full AWS administrator access, set `entra.groupNamePrefix` (for example, `AWS`) and use an `entraGroupSuffix` of `Administrators` to derive a dedicated group such as `AWS-Administrators`. Assign the group to the AWS enterprise application so assignment-based SCIM provisioning includes it, then configure an access mapping with `permissionSet: "AdministratorAccess"` and the desired account selector. The governance stage creates or adopts the `AdministratorAccess` permission set and attaches the AWS-managed `arn:aws:iam::aws:policy/AdministratorAccess` policy. Keep this group separate from read-only groups and require an explicit approval for membership changes. `all-active-accounts` expands at runtime; rerun the bootstrap after new organization accounts become active.
 
 When the required log-archive/member-account foundation exists, run the orchestrator with the explicit governance approval:
 

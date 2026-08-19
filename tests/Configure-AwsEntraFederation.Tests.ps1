@@ -38,14 +38,22 @@ Describe 'Federation configuration examples' {
         $config.bootstrap.requiredAccountCount | Should -BeGreaterThan 0
         $config.bootstrap.requestedAccountQuota | Should -BeGreaterOrEqual $config.bootstrap.requiredAccountCount
         $config.entra | Should -Not -BeNullOrEmpty
+        $config.entra.groupNamePrefix | Should -Be 'AWS'
         @($config.accessMappings).Count | Should -BeGreaterThan 0
         @($config.accessMappings | Where-Object { $_.permissionSet -eq 'AdministratorAccess' }).Count | Should -Be 1
+        @($config.accessMappings | Where-Object { $_.entraGroupSuffix -eq 'Administrators' }).Count | Should -Be 1
     }
 
     It 'does not include a SCIM token or private key' {
         $configPath = Join-Path $PSScriptRoot '..\scripts\entra-aws-federation.example.json'
         $configText = Get-Content -LiteralPath $configPath -Raw
         $configText | Should -Not -Match '(?i)(scim.*token|clientSecret|privateKey|password)'
+    }
+
+    It 'supports configurable Entra group prefixes and suffix mappings' {
+        $scriptText | Should -Match 'groupNamePrefix'
+        $scriptText | Should -Match 'entraGroupSuffix'
+        $scriptText | Should -Match 'must use either entraGroup or entraGroupSuffix'
     }
 }
 

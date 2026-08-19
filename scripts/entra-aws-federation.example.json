@@ -17,25 +17,26 @@
     "clientId": "00000000-0000-0000-0000-000000000000",
     "certificateThumbprint": "REPLACE_WITH_CERTIFICATE_THUMBPRINT",
     "applicationDisplayName": "AWS IAM Identity Center",
+    "groupNamePrefix": "AWS",
     "applicationTemplateId": "",
     "identityProviderMetadataPath": "C:\\SecureBootstrap\\entra-idp-metadata.xml"
   },
   "accessMappings": [
     {
       "name": "security-audit",
-      "entraGroup": "AWS-SecurityAudit",
+      "entraGroupSuffix": "SecurityAudit",
       "permissionSet": "SecurityAudit",
       "accountIds": ["all-active-accounts"]
     },
     {
       "name": "billing-read-only",
-      "entraGroup": "AWS-BillingReadOnly",
+      "entraGroupSuffix": "BillingReadOnly",
       "permissionSet": "BillingReadOnly",
       "accountIds": ["000000000000"]
     },
     {
       "name": "administrators",
-      "entraGroup": "AWS-Administrators",
+      "entraGroupSuffix": "Administrators",
       "permissionSet": "AdministratorAccess",
       "accountIds": ["all-active-accounts"]
     }

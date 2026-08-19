@@ -83,17 +83,33 @@ function Read-FederationConfig {
         Require-Value -Name "entra.$name" -Value (Get-ConfigValue -Object $entra -Name $name)
     }
 
+    $groupNamePrefix = [string](Get-ConfigValue -Object $entra -Name 'groupNamePrefix' -Default 'AWS')
+    $hasGroupSuffixMapping = @($mappings | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string](Get-ConfigValue -Object $_ -Name 'entraGroupSuffix'))
+    }).Count -gt 0
+    if ($hasGroupSuffixMapping) {
+        Require-Value -Name 'entra.groupNamePrefix' -Value $groupNamePrefix
+    }
+
     $seenMappingNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $normalizedMappings = [Collections.Generic.List[object]]::new()
 
     foreach ($mapping in $mappings) {
         $mappingName = [string](Get-ConfigValue -Object $mapping -Name 'name')
         $groupName = [string](Get-ConfigValue -Object $mapping -Name 'entraGroup')
+        $groupSuffix = [string](Get-ConfigValue -Object $mapping -Name 'entraGroupSuffix')
         $permissionSet = [string](Get-ConfigValue -Object $mapping -Name 'permissionSet')
         $accountIds = @(Get-ConfigValue -Object $mapping -Name 'accountIds' -Default @())
 
+        if (-not [string]::IsNullOrWhiteSpace($groupName) -and -not [string]::IsNullOrWhiteSpace($groupSuffix)) {
+            throw "Access mapping '$mappingName' must use either entraGroup or entraGroupSuffix, not both."
+        }
+        if ([string]::IsNullOrWhiteSpace($groupName) -and -not [string]::IsNullOrWhiteSpace($groupSuffix)) {
+            $groupName = "$groupNamePrefix-$groupSuffix"
+        }
+
         Require-Value -Name 'accessMappings[].name' -Value $mappingName
-        Require-Value -Name "accessMappings[$mappingName].entraGroup" -Value $groupName
+        Require-Value -Name "accessMappings[$mappingName].entraGroup or entraGroupSuffix" -Value $groupName
         Require-Value -Name "accessMappings[$mappingName].permissionSet" -Value $permissionSet
         if (-not $seenMappingNames.Add($mappingName)) {
             throw "Duplicate access mapping name '$mappingName'."

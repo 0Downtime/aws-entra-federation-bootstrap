@@ -17,7 +17,7 @@ The stages are intentional. Account creation and cross-account role assumption a
 
 1. Decide whether the management account already owns an AWS Organization. For an existing organization, import and review the organization resource rather than creating a second organization.
 2. Prepare two unique, valid root-email addresses for the member accounts.
-3. Enable an organization instance of IAM Identity Center in the region you will use for SSO. Create the Entra groups you need, such as `AWS-SecurityAudit`, `AWS-BillingReadOnly`, and (only when explicitly approved) `AWS-Administrators`. The federation configuration can resolve their IAM Identity Center group IDs after SCIM provisioning.
+3. Enable an organization instance of IAM Identity Center in the region you will use for SSO. Create the Entra groups you need, such as `AWS-SecurityAudit`, `AWS-BillingReadOnly`, and (only when explicitly approved) `AWS-Administrators`. Set `entra.groupNamePrefix` once and use `entraGroupSuffix` in mappings; the federation configuration derives the full group names and resolves their IAM Identity Center group IDs after SCIM provisioning.
 
 ## Deployment
 
@@ -209,7 +209,7 @@ pwsh .\scripts\Configure-AwsEntraFederation.ps1 `
 
 The script creates only profiles in its managed block and preserves unrelated AWS profiles. Generated governance assignment variables are written to the ignored `stages/02-governance/federation.auto.tfvars.json` file. Human AWS CLI authentication remains interactive through `aws sso login`.
 
-`AdministratorAccess` is supported as an explicit access mapping. It creates or adopts an AWS permission set backed by the AWS-managed `AdministratorAccess` policy and assigns it to the `AWS-Administrators` group for the configured account selector. `all-active-accounts` is evaluated when the bootstrap runs; rerun the onboarding process after a new account becomes active so the new account receives the assignment.
+`AdministratorAccess` is supported as an explicit access mapping. It creates or adopts an AWS permission set backed by the AWS-managed `AdministratorAccess` policy and assigns it to the derived administrator group for the configured account selector. `all-active-accounts` is evaluated when the bootstrap runs; rerun the onboarding process after a new account becomes active so the new account receives the assignment.
 
 ### Enabling SSH access to the Windows VM
 
