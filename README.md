@@ -146,6 +146,25 @@ pwsh -NoProfile -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mod
 
 The prerequisite script does not create AWS credentials, Entra app registrations, certificates, SCIM tokens, or IAM Identity Center assignments. Those are intentionally validated or performed by the onboarding workflow.
 
+Generate the ignored production configuration instead of hand-editing every field. The initializer discovers management-capable AWS profiles, the organization account, the IAM Identity Center region, the Entra tenant from Azure CLI, a uniquely named Graph app, and a matching private-key certificate. It prompts only when discovery is ambiguous or an API cannot expose the value, such as the access portal start URL:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Initialize-AwsEntraFederationConfig.ps1 `
+  -Mode Plan `
+  -ManagementProfile management-prod `
+  -GroupNamePrefix PROD-AWS
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Initialize-AwsEntraFederationConfig.ps1 `
+  -Mode Initialize `
+  -ManagementProfile management-prod `
+  -ManagementAccountId 000000000000 `
+  -GroupNamePrefix PROD-AWS
+```
+
+Use `-IncludeAdministratorAccess` only when full administrator access is explicitly approved. The initializer writes `scripts\entra-aws-federation.local.json`, which is ignored by Git; it never writes SCIM tokens or private keys.
+
 Copy the example configuration outside the repository or to a local ignored file, then set the tenant, Graph application, certificate thumbprint, AWS access portal URL, metadata paths, and group mappings. The certificate private key must already be present in the Windows certificate store and must not be committed.
 
 The first AWS setup still requires the IAM Identity Center organization instance, the external-identity-provider wizard, and the one-time SCIM endpoint/token retrieval. Supply the SCIM token through the bootstrap script's secure prompt or `-ScimToken`; the script stores it only as a Windows DPAPI-protected value under `%ProgramData%\AwsEntraFederation`. The Entra metadata XML and AWS service-provider metadata XML are validated locally but are not placed in Terraform state.

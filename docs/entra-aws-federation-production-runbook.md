@@ -29,6 +29,17 @@ pwsh -NoProfile -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mod
 
 For machine-wide winget installs, use an elevated PowerShell prompt and `-WingetScope Machine`. If `winget` is unavailable, install Microsoft's App Installer package first. The script does not create AWS credentials, Entra app registrations, certificates, SCIM tokens, or IAM Identity Center assignments.
 
+## 1b. Generate the local configuration
+
+Use the initializer to discover non-secret values and write the ignored local configuration. It verifies the selected AWS profile through STS and Organizations, searches for the IAM Identity Center instance, uses Azure CLI for the Entra tenant and Graph app when available, finds a unique valid private-key certificate, creates the metadata directory, and derives group names from `entra.groupNamePrefix` and mapping suffixes. It prompts for values that are ambiguous or not exposed by the APIs, especially the AWS access portal start URL.
+
+~~~powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Initialize-AwsEntraFederationConfig.ps1 -Mode Plan -ManagementProfile management-prod -GroupNamePrefix PROD-AWS
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Initialize-AwsEntraFederationConfig.ps1 -Mode Initialize -ManagementProfile management-prod -ManagementAccountId 000000000000 -GroupNamePrefix PROD-AWS
+~~~
+
+Add `-IncludeAdministratorAccess` only when full administrator access is explicitly approved. The initializer writes `scripts\entra-aws-federation.local.json`, which is ignored by Git, and never writes SCIM tokens or private keys.
+
 The Windows host needs AWS CLI v2, Terraform, PowerShell 7, Microsoft.Graph PowerShell modules, Pester, an AWS profile with management-account Organizations and IAM Identity Center permissions, and a certificate-backed Entra automation app with its private key in the Windows certificate store.
 
 For the local test VM, the AWS profile was management-girsnoopy. Production should use the intended management-account profile instead.

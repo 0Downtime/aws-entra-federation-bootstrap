@@ -50,6 +50,23 @@ Describe 'Install-AwsEntraFederationPrerequisites.ps1' {
     }
 }
 
+Describe 'Initialize-AwsEntraFederationConfig.ps1' {
+    BeforeAll {
+        $initializerPath = Join-Path $PSScriptRoot '..\scripts\Initialize-AwsEntraFederationConfig.ps1'
+        $initializerText = Get-Content -LiteralPath $initializerPath -Raw
+    }
+
+    It 'discovers and writes only non-secret configuration values' {
+        $initializerText | Should -Match 'Get-ManagementProfile'
+        $initializerText | Should -Match 'sso-admin.*list-instances'
+        $initializerText | Should -Match 'az.*account.*show'
+        $initializerText | Should -Match 'CertificateSubjectPattern'
+        $initializerText | Should -Match 'MetadataDirectory'
+        $initializerText | Should -Match 'IncludeAdministratorAccess'
+        $initializerText | Should -Not -Match '(?im)^\s*\$?(scimToken|clientSecret|privateKey|aws_secret_access_key|password)\s*='
+    }
+}
+
 Describe 'Federation configuration examples' {
     It 'contains the required top-level sections' {
         $configPath = Join-Path $PSScriptRoot '..\scripts\entra-aws-federation.example.json'
