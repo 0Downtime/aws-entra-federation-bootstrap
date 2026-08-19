@@ -16,6 +16,23 @@ Describe 'Configure-AwsEntraFederation.ps1 static safety checks' {
         $scriptText | Should -Match 'not \$ApproveIdentitySourceChange'
     }
 
+    It 'has a metadata-only preparation mode that does not require a SCIM token' {
+        $scriptText | Should -Match "ValidateSet\('Validate', 'Plan', 'PrepareMetadata', 'Apply', 'RotateScimToken'\)"
+        $scriptText | Should -Match 'EnsureEntraMetadata'
+        $scriptText | Should -Match 'federationmetadata/2007-06/federationmetadata.xml'
+        $scriptText | Should -Match 'Metadata preparation complete'
+        $scriptText | Should -Match 'AWS does not expose this download through the public sso-admin API'
+    }
+
+    It 'normalizes Graph IDs and merges SAML URLs on the application object' {
+        $scriptText | Should -Match 'Normalize-GraphServicePrincipal'
+        $scriptText | Should -Match 'AdditionalProperties'
+        $scriptText | Should -Match 'Ensure-EntraApplicationSamlUrls'
+        $scriptText | Should -Match 'applications.*identifierUris,web'
+        $scriptText | Should -Match 'redirectUris = @\(\$redirectUris\)'
+        $scriptText | Should -Not -Match '\$patch\.replyUrls'
+    }
+
     It 'uses DPAPI-backed secure storage and redacted output' {
         $scriptText | Should -Match 'ConvertFrom-SecureString'
         $scriptText | Should -Match 'SecretStorePath'
@@ -40,6 +57,7 @@ Describe 'Install-AwsEntraFederationPrerequisites.ps1' {
         $prerequisiteText | Should -Match 'Install-WingetPackage'
         $prerequisiteText | Should -Match 'Microsoft.PowerShell'
         $prerequisiteText | Should -Match 'Amazon.AWSCLI'
+        $prerequisiteText | Should -Match 'Microsoft.AzureCLI'
         $prerequisiteText | Should -Match 'Hashicorp.Terraform'
         $prerequisiteText | Should -Match 'Microsoft.Graph.Authentication'
         $prerequisiteText | Should -Match 'Pester'
@@ -68,6 +86,20 @@ Describe 'Initialize-AwsEntraFederationConfig.ps1' {
         $initializerText | Should -Match '--append'
         $initializerText | Should -Match 'New-SelfSignedCertificate'
         $initializerText | Should -Not -Match '(?im)^\s*\$?(scimToken|clientSecret|privateKey|aws_secret_access_key|password)\s*='
+    }
+
+    It 'supports explicit, idempotent Graph app bootstrap with tenant-wide consent' {
+        $initializerText | Should -Match 'EnsureGraphApp'
+        $initializerText | Should -Match 'ApproveGraphAppChange'
+        $initializerText | Should -Match 'Application\.ReadWrite\.All'
+        $initializerText | Should -Match 'AppRoleAssignment\.ReadWrite\.All'
+        $initializerText | Should -Match 'Group\.Read\.All'
+        $initializerText | Should -Match 'Synchronization\.ReadWrite\.All'
+        $initializerText | Should -Match 'ad.*app.*permission.*admin-consent'
+        $initializerText | Should -Match 'ad.*sp.*create'
+        $initializerText | Should -Match 'permissionRequests'
+        $initializerText | Should -Match 'missingRoles'
+        $initializerText | Should -Match 'Re-run with -ApproveGraphAppChange'
     }
 }
 
@@ -112,6 +144,8 @@ Describe 'Invoke-AwsEntraFederationBootstrap.ps1 onboarding orchestrator' {
         $orchestratorText | Should -Match 'Invoke-QuotaCheck'
         $orchestratorText | Should -Match 'Invoke-OrganizationBootstrap'
         $orchestratorText | Should -Match 'Invoke-Federation'
+        $orchestratorText | Should -Match "ValidateSet\('Validate', 'Plan', 'PrepareMetadata', 'Apply'\)"
+        $orchestratorText | Should -Match 'EnsureEntraMetadata'
     }
 
     It 'requires explicit approvals for every mutating boundary' {

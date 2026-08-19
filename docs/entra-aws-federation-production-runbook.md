@@ -19,7 +19,7 @@ The automation refuses mutating federation modes unless the -ApproveIdentitySour
 
 ## 1. Prepare the Windows host
 
-Run the repository prerequisite bootstrap first. It is safe to run `Validate` repeatedly. `Install` uses winget for the command-line tools and installs the Graph authentication and Pester modules for the current user:
+Run the repository prerequisite bootstrap first. It is safe to run `Validate` repeatedly. `Install` uses winget for AWS CLI v2, Azure CLI, PowerShell 7, Terraform, and Git, then installs the Graph authentication and Pester modules for the current user:
 
 ~~~powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Validate
@@ -118,6 +118,15 @@ The app needs these Microsoft Graph application permissions:
 - Group.Read.All
 - Synchronization.ReadWrite.All
 
+The initializer can perform this app bootstrap through the signed-in Azure CLI identity. Run `az login` with the Global Administrator account that is authorized to grant tenant-wide consent, then use `-EnsureGraphApp -ApproveGraphAppChange`. The command creates or reuses the dedicated app and service principal, adds only the four permissions above, and executes `az ad app permission admin-consent`. The approval switch is intentionally mandatory for `Initialize` because this is a tenant-wide security change. The personal Global Administrator account is not stored in the configuration and is not used for runtime Graph automation.
+
+```powershell
+az login
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Initialize-AwsEntraFederationConfig.ps1 -Mode Initialize -ManagementProfile management-prod -ManagementAccountId 000000000000 -AwsRegion us-east-1 -IdentityCenterRegion us-east-1 -StartUrl "https://d-xxxxxxxxxx.awsapps.com/start" -GroupNamePrefix PROD-AWS -EnsureGraphApp -ApproveGraphAppChange -EnsureCertificate -CertificateYears 3
+```
+
+The operation is idempotent. Existing app credentials are preserved, and the generated certificate's private key remains in the current Windows user's certificate store.
+
 Grant tenant-wide admin consent in Entra under the app registration's API permissions page. Verify the certificate thumbprint in the local JSON matches the certificate containing the private key:
 
 ~~~powershell
@@ -130,14 +139,19 @@ HasPrivateKey must be True. Never export or commit the private key.
 
 If Azure CLI reports permissions but Graph calls still return Insufficient privileges, inspect the automation service principal's Microsoft Graph app-role assignments. An admin must complete the missing grants; do not work around this with delegated user tokens in the repository.
 
-## 4. Configure Entra SAML federation
+## 4. Prepare Entra SAML metadata
 
-1. In Entra, instantiate or open the AWS IAM Identity Center gallery application.
-2. Set the application to SAML single sign-on.
-3. Configure the AWS IAM Identity Center ACS/reply URL and issuer/entity ID from the AWS external-IdP setup screen.
-4. Create or activate an Entra SAML token-signing certificate.
-5. Assign the intended Entra groups to the enterprise application.
-6. Download fresh Entra IdP SAML metadata after the signing certificate is active.
+Download the AWS service-provider metadata once from IAM Identity Center's external identity-provider setup and save it at the configured `aws.serviceProviderMetadataPath`. AWS currently exposes this artifact through the console workflow; the public `sso-admin` API does not provide an equivalent download operation.
+
+Then run the metadata-only phase. It does not require a SCIM token and does not change the AWS identity source:
+
+~~~powershell
+pwsh -NoProfile -File .\scripts\Configure-AwsEntraFederation.ps1 -Mode PrepareMetadata -ConfigPath .\scripts\entra-aws-federation.local.json -EnsureEntraMetadata
+~~~
+
+This phase uses the certificate-backed Graph app to instantiate or reuse the AWS IAM Identity Center enterprise application, configure SAML using the AWS ACS values, create or activate the Entra SAML signing certificate when needed, and download tenant-specific Entra federation metadata automatically.
+
+For the canonical onboarding entry point, use the equivalent `Invoke-AwsEntraFederationBootstrap.ps1 -Mode PrepareMetadata -OrganizationMode Skip -EnsureEntraMetadata` command. It performs the same metadata phase without requesting a SCIM token.
 
 The metadata must contain an X509Certificate element. An older metadata file without the certificate produced the AWS error "IdP signing certificate cannot be null". The orchestrator now validates this locally and stops before making an AWS change if the certificate is absent or invalid.
 
@@ -153,7 +167,7 @@ The initial AWS identity-source change remains console-gated:
 4. Upload the freshly downloaded Entra IdP metadata XML.
 5. Confirm the certificate is recognized and review the displayed ACS and issuer values.
 6. Explicitly confirm the cutover.
-7. Download the AWS service-provider metadata shown after the change if it is needed for Entra configuration.
+7. Keep the AWS service-provider metadata file for future validation and reruns.
 
 After the cutover, verify the AWS instance is active and reports an external identity provider. Do not repeat the cutover casually; existing native IAM Identity Center assignments can be affected.
 

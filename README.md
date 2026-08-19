@@ -136,7 +136,7 @@ For the complete repeatable production procedure, see [docs/entra-aws-federation
 
 The repository includes `scripts/Configure-AwsEntraFederation.ps1` and an example configuration at `scripts/entra-aws-federation.example.json`. The script uses the existing AWS management profile for AWS discovery and a certificate-backed Microsoft Graph application for Entra automation.
 
-Bootstrap or validate the Windows prerequisites. `Validate` is read-only; `Install` uses winget for AWS CLI v2, Terraform, PowerShell 7, and Git, then installs the required PowerShell modules for the current user. Run `Install` from an elevated prompt with `-WingetScope Machine` if machine-wide installation is preferred:
+Bootstrap or validate the Windows prerequisites. `Validate` is read-only; `Install` uses winget for AWS CLI v2, Azure CLI, Terraform, PowerShell 7, and Git, then installs the required PowerShell modules for the current user. Run `Install` from an elevated prompt with `-WingetScope Machine` if machine-wide installation is preferred:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Validate
@@ -166,9 +166,29 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 `-EnsureCertificate` creates a 3-year self-signed certificate in `Cert:\CurrentUser\My` and appends only its public certificate to the Entra app. Use `-CertificateYears 2` or `-CertificateYears 3` to choose the lifetime. Existing valid certificates are reused, and existing app credentials are preserved. Use `-IncludeAdministratorAccess` only when full administrator access is explicitly approved. The initializer writes `scripts\entra-aws-federation.local.json`, which is ignored by Git; it never writes SCIM tokens or private keys.
 
+To let the signed-in Azure CLI Global Administrator bootstrap the dedicated Graph app as well, add `-EnsureGraphApp -ApproveGraphAppChange` to `Initialize`. This creates or reuses `AWS Entra Federation Automation`, creates its service principal when needed, adds only these Graph application permissions, and runs tenant-wide admin consent: `Application.ReadWrite.All`, `AppRoleAssignment.ReadWrite.All`, `Group.Read.All`, and `Synchronization.ReadWrite.All`. The approval switch is required for `Initialize`; without it the script stops before any Entra mutation. Your user account is used only for this one-time bootstrap; runtime automation remains certificate-backed app-only authentication.
+
+Example full bootstrap command:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Initialize-AwsEntraFederationConfig.ps1 -Mode Initialize -ManagementProfile management-prod -ManagementAccountId 000000000000 -AwsRegion us-east-1 -IdentityCenterRegion us-east-1 -StartUrl "https://d-xxxxxxxxxx.awsapps.com/start" -GroupNamePrefix PROD-AWS -EnsureGraphApp -ApproveGraphAppChange -EnsureCertificate -CertificateYears 3
+```
+
+The app bootstrap is idempotent: an existing uniquely named app, service principal, requested Graph permissions, and certificate credentials are reused. Existing app credentials are never removed. If multiple apps have the configured display name, supply `-GraphClientId` explicitly.
+
 Copy the example configuration outside the repository or to a local ignored file, then set the tenant, Graph application, certificate thumbprint, AWS access portal URL, metadata paths, and group mappings. The certificate private key must already be present in the Windows certificate store and must not be committed.
 
-The first AWS setup still requires the IAM Identity Center organization instance, the external-identity-provider wizard, and the one-time SCIM endpoint/token retrieval. Supply the SCIM token through the bootstrap script's secure prompt or `-ScimToken`; the script stores it only as a Windows DPAPI-protected value under `%ProgramData%\AwsEntraFederation`. The Entra metadata XML and AWS service-provider metadata XML are validated locally but are not placed in Terraform state.
+The first AWS setup still requires the IAM Identity Center organization instance, the external-identity-provider wizard, and the one-time SCIM endpoint/token retrieval. The AWS service-provider metadata download remains a one-time AWS console input because the public `sso-admin` API does not expose that download. The Entra identity-provider metadata is generated automatically by the metadata-preparation phase after the AWS enterprise application and signing certificate are configured. Supply the SCIM token through the bootstrap script's secure prompt or `-ScimToken`; the script stores it only as a Windows DPAPI-protected value under `%ProgramData%\AwsEntraFederation`. Metadata is validated locally and is not placed in Terraform state.
+
+After placing the AWS service-provider metadata at the configured path, prepare the Entra metadata without needing a SCIM token:
+
+```powershell
+pwsh -NoProfile -File .\scripts\Configure-AwsEntraFederation.ps1 -Mode PrepareMetadata -ConfigPath .\scripts\entra-aws-federation.local.json -EnsureEntraMetadata
+```
+
+The command configures the AWS enterprise application's SAML settings, creates or activates its Entra signing certificate when needed, downloads tenant-specific federation metadata, validates its signing certificate, and writes the XML to the configured secure path. It does not change the AWS identity source or start SCIM. Upload the generated Entra metadata in the one-time AWS external-identity-provider workflow, then run `Apply` with the SCIM endpoint and SecureString token.
+
+The same phase is available through the canonical orchestrator with `-Mode PrepareMetadata -OrganizationMode Skip -EnsureEntraMetadata`; it does not prompt for or persist a SCIM token.
 
 Use the orchestrator for production onboarding. Set the non-secret `bootstrap` values in the JSON example, then run a read-only federation and quota preflight against the existing organization:
 

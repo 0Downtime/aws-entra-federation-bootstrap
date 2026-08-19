@@ -2,7 +2,7 @@
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
-    [ValidateSet('Validate', 'Plan', 'Apply', 'RotateScimToken')]
+    [ValidateSet('Validate', 'Plan', 'PrepareMetadata', 'Apply', 'RotateScimToken')]
     [string]$Mode = 'Validate',
 
     [Parameter(Mandatory = $true)]
@@ -14,6 +14,7 @@ param(
     [string]$ScimEndpoint,
     [System.Security.SecureString]$ScimToken,
     [switch]$ApproveIdentitySourceChange,
+    [switch]$EnsureEntraMetadata,
     [switch]$ApplyTerraform,
     [switch]$ForceManagedProfiles,
     [string]$OutputPath
@@ -387,6 +388,121 @@ function Get-GraphCollection {
     return @($items)
 }
 
+function Get-GraphResourceId {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $id = [string](Get-ConfigValue -Object $Object -Name 'id')
+    if ([string]::IsNullOrWhiteSpace($id)) {
+        $additional = $Object.PSObject.Properties['AdditionalProperties']
+        if ($null -ne $additional -and $additional.Value -is [Collections.IDictionary] -and $additional.Value.Contains('id')) {
+            $id = [string]$additional.Value['id']
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($id)) {
+        $properties = @($Object.PSObject.Properties.Name) -join ', '
+        throw "Graph did not return an id for $Description. Returned properties: $properties"
+    }
+    return $id
+}
+
+function Normalize-GraphServicePrincipal {
+    param([Parameter(Mandatory = $true)]$ServicePrincipal)
+
+    $id = Get-GraphResourceId -Object $ServicePrincipal -Description 'the Entra service principal'
+    $idProperty = $ServicePrincipal.PSObject.Properties['id']
+    if ($null -eq $idProperty -or [string]::IsNullOrWhiteSpace([string]$idProperty.Value)) {
+        $ServicePrincipal | Add-Member -MemberType NoteProperty -Name id -Value $id -Force
+    }
+    return $ServicePrincipal
+}
+
+function Ensure-EntraApplicationSamlUrls {
+    param(
+        [Parameter(Mandatory = $true)]$ServicePrincipal,
+        [Parameter(Mandatory = $true)]$AwsMetadata
+    )
+
+    $appId = [string](Get-ConfigValue -Object $ServicePrincipal -Name 'appId')
+    if ([string]::IsNullOrWhiteSpace($appId)) {
+        throw 'The AWS Entra service principal did not expose its application ID; cannot configure SAML URLs.'
+    }
+
+    $encodedAppId = [uri]::EscapeDataString($appId)
+    $applications = @(Get-GraphCollection -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=appId%20eq%20'$encodedAppId'&`$select=id,appId,identifierUris,web")
+    if ($applications.Count -ne 1) {
+        throw "Expected exactly one Entra application object for appId $appId; found $($applications.Count)."
+    }
+
+    $application = $applications[0]
+    $applicationObjectId = Get-GraphResourceId -Object $application -Description "the AWS Entra application object for appId $appId"
+    $entityId = [string]$AwsMetadata.EntityId
+    $requiredRedirectUris = @($AwsMetadata.AssertionConsumerServices | ForEach-Object { [string]$_ } | Where-Object { $_ } | Select-Object -Unique)
+    if ([string]::IsNullOrWhiteSpace($entityId) -or $requiredRedirectUris.Count -eq 0) {
+        throw 'AWS service-provider metadata did not contain the SAML entity ID and at least one ACS URL required to configure the Entra application.'
+    }
+
+    $existingIdentifierUris = @(Get-ConfigValue -Object $application -Name 'identifierUris' -Default @() | ForEach-Object { [string]$_ } | Where-Object { $_ })
+    $identifierUris = [Collections.Generic.List[string]]::new()
+    foreach ($uri in $existingIdentifierUris) {
+        $identifierUris.Add($uri)
+    }
+    if (-not $identifierUris.Contains($entityId)) { $identifierUris.Add($entityId) }
+
+    $web = Get-ConfigValue -Object $application -Name 'web' -Default ([pscustomobject]@{})
+    $existingWebRedirectUris = @(Get-ConfigValue -Object $web -Name 'redirectUris' -Default @() | ForEach-Object { [string]$_ } | Where-Object { $_ })
+    $redirectUris = [Collections.Generic.List[string]]::new()
+    foreach ($uri in $existingWebRedirectUris) {
+        $redirectUris.Add($uri)
+    }
+    foreach ($uri in $requiredRedirectUris) {
+        if (-not $redirectUris.Contains($uri)) { $redirectUris.Add($uri) }
+    }
+
+    $identifierChanged = $entityId -notin $existingIdentifierUris
+    $redirectChanged = @($requiredRedirectUris | Where-Object { $_ -notin $existingWebRedirectUris }).Count -gt 0
+    $needsUpdate = $identifierChanged -or $redirectChanged
+    if ($Mode -notin @('Plan', 'Validate') -and $needsUpdate) {
+        $webPatch = [ordered]@{}
+        if ($web -is [Collections.IDictionary]) {
+            foreach ($key in $web.Keys) {
+                if ([string]$key -ne 'redirectUris' -and $null -ne $web[$key]) {
+                    $webPatch[[string]$key] = $web[$key]
+                }
+            }
+        }
+        else {
+            foreach ($property in @($web.PSObject.Properties)) {
+                if ($property.Name -notin @('redirectUris', 'AdditionalProperties') -and $null -ne $property.Value) {
+                    $webPatch[$property.Name] = $property.Value
+                }
+            }
+            $additionalWebProperties = $web.PSObject.Properties['AdditionalProperties']
+            if ($null -ne $additionalWebProperties -and $additionalWebProperties.Value -is [Collections.IDictionary]) {
+                foreach ($key in $additionalWebProperties.Value.Keys) {
+                    if ([string]$key -ne 'redirectUris' -and -not $webPatch.Contains([string]$key) -and $null -ne $additionalWebProperties.Value[$key]) {
+                        $webPatch[[string]$key] = $additionalWebProperties.Value[$key]
+                    }
+                }
+            }
+        }
+        $webPatch.redirectUris = @($redirectUris)
+        Invoke-GraphRequest -Method PATCH -Uri "https://graph.microsoft.com/v1.0/applications/$applicationObjectId" -Body @{
+            identifierUris = @($identifierUris)
+            web = $webPatch
+        } | Out-Null
+    }
+
+    $script:Result.entra.applicationObjectId = $applicationObjectId
+    $script:Result.entra.samlUrls = [ordered]@{
+        identifierUri = $entityId
+        redirectUriCount = $redirectUris.Count
+        status = if ($needsUpdate -and $Mode -notin @('Plan', 'Validate')) { 'merged' } elseif ($needsUpdate) { 'planned' } else { 'existing' }
+    }
+}
+
 function Resolve-EntraApplication {
     param($Config, $AwsMetadata)
 
@@ -435,10 +551,12 @@ function Resolve-EntraApplication {
         }
     }
 
-    $patch = @{ preferredSingleSignOnMode = 'saml'; appRoleAssignmentRequired = $true }
+    $servicePrincipal = Normalize-GraphServicePrincipal -ServicePrincipal $servicePrincipal
+
     if ($null -ne $AwsMetadata) {
-        $patch.replyUrls = @($AwsMetadata.AssertionConsumerServices)
+        Ensure-EntraApplicationSamlUrls -ServicePrincipal $servicePrincipal -AwsMetadata $AwsMetadata
     }
+    $patch = @{ preferredSingleSignOnMode = 'saml' }
     if ($Mode -notin @('Plan', 'Validate')) {
         Invoke-GraphRequest -Method PATCH -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($servicePrincipal.id)" -Body $patch | Out-Null
     }
@@ -503,6 +621,81 @@ function Ensure-EntraSamlSigningCertificate {
         metadataRefreshRequired = $true
     }
     return $newThumbprint
+}
+
+function Ensure-EntraIdentityProviderMetadata {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)]$ServicePrincipal,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace([string]$ServicePrincipal.appId)) {
+        throw 'The AWS Entra enterprise application did not expose an application ID for federation metadata retrieval.'
+    }
+
+    $metadataUri = "https://login.microsoftonline.com/$($Config.Entra.tenantId)/federationmetadata/2007-06/federationmetadata.xml?appid=$($ServicePrincipal.appId)"
+    if ($Mode -in @('Validate', 'Plan')) {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            return Read-AndValidateMetadata -Path $Path -Kind 'Entra identity-provider'
+        }
+        if ($Mode -eq 'Plan') {
+            $script:Result.warnings += "Entra identity-provider metadata would be downloaded to $Path from the tenant federation metadata endpoint."
+            return $null
+        }
+        throw "Entra identity-provider metadata was not found: $Path. Rerun Apply with -EnsureEntraMetadata after the SAML application and signing certificate are configured."
+    }
+
+    if (-not $EnsureEntraMetadata) {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            return Read-AndValidateMetadata -Path $Path -Kind 'Entra identity-provider'
+        }
+        throw "Entra identity-provider metadata was not found: $Path. Rerun Apply with -EnsureEntraMetadata to download it automatically."
+    }
+
+    $parent = Split-Path -Parent $Path
+    if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    $temporaryPath = Join-Path $env:TEMP ("entra-idp-metadata-{0}.xml" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        Write-Information "Downloading Entra identity-provider metadata for '$($Config.Entra.applicationDisplayName)'..." -InformationAction Continue
+        $metadata = $null
+        $downloadError = $null
+        for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+                Invoke-WebRequest -Uri $metadataUri -OutFile $temporaryPath -ErrorAction Stop
+                $metadata = Read-AndValidateMetadata -Path $temporaryPath -Kind 'Entra identity-provider'
+                break
+            }
+            catch {
+                $downloadError = $_.Exception
+                if ($attempt -eq 5) { throw }
+                $delay = [int][Math]::Pow(2, $attempt - 1)
+                Write-Information "Entra metadata is not ready yet; retrying in $delay second(s)..." -InformationAction Continue
+                Start-Sleep -Seconds $delay
+            }
+        }
+        if ($null -eq $metadata) {
+            throw $downloadError
+        }
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            Copy-Item -LiteralPath $Path -Destination "$Path.bak" -Force
+        }
+        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+        $metadata.Path = (Resolve-Path -LiteralPath $Path).Path
+        $script:Result.entra.identityProviderMetadata = [ordered]@{
+            path = $metadata.Path
+            source = $metadataUri
+            singleSignOnServiceCount = @($metadata.SingleSignOnServices).Count
+            refreshed = $true
+        }
+        return $metadata
+    }
+    catch {
+        throw "Could not download or validate Entra identity-provider metadata from ${metadataUri}: $($_.Exception.Message)"
+    }
+    finally {
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Resolve-EntraGroups {
@@ -801,17 +994,17 @@ try {
 
     $awsMetadataPath = if ($AwsServiceProviderMetadataPath) { $AwsServiceProviderMetadataPath } else { [string](Get-ConfigValue -Object $config.Aws -Name 'serviceProviderMetadataPath') }
     $entraMetadataPath = if ($EntraIdentityProviderMetadataPath) { $EntraIdentityProviderMetadataPath } else { [string](Get-ConfigValue -Object $config.Entra -Name 'identityProviderMetadataPath') }
-    if ($Mode -in @('Validate', 'Plan', 'Apply')) {
+    if ($Mode -in @('Validate', 'Plan', 'PrepareMetadata', 'Apply')) {
         Require-Value -Name 'AWS service-provider metadata path' -Value $awsMetadataPath
         Require-Value -Name 'Entra identity-provider metadata path' -Value $entraMetadataPath
     }
+    if (-not (Test-Path -LiteralPath $awsMetadataPath -PathType Leaf)) {
+        throw "AWS service-provider metadata was not found: $awsMetadataPath. Download it once from IAM Identity Center's external identity provider setup under Service provider metadata, then place it at this path. AWS does not expose this download through the public sso-admin API."
+    }
     $awsMetadata = Read-AndValidateMetadata -Path $awsMetadataPath -Kind 'AWS service-provider'
-    $entraMetadata = Read-AndValidateMetadata -Path $entraMetadataPath -Kind 'Entra identity-provider'
-    if ($null -ne $entraMetadata) {
-        $script:Result.entra.identityProviderMetadata = [ordered]@{
-            path = $entraMetadata.Path
-            singleSignOnServiceCount = @($entraMetadata.SingleSignOnServices).Count
-        }
+    $entraMetadata = $null
+    if (Test-Path -LiteralPath $entraMetadataPath -PathType Leaf) {
+        $entraMetadata = Read-AndValidateMetadata -Path $entraMetadataPath -Kind 'Entra identity-provider'
     }
 
     if ($Mode -in @('Apply', 'RotateScimToken') -and -not $ApproveIdentitySourceChange) {
@@ -822,22 +1015,37 @@ try {
     $servicePrincipal = Resolve-EntraApplication -Config $config -AwsMetadata $awsMetadata
     if ($servicePrincipal.PSObject.Properties.Name -contains 'Planned') {
         $script:Result.warnings += 'Entra gallery application creation is planned; rerun Apply after the application exists.'
+        if ($null -eq $entraMetadata) {
+            $script:Result.warnings += "Entra identity-provider metadata will be downloaded to $entraMetadataPath during Apply with -EnsureEntraMetadata."
+        }
     }
     else {
         $null = Ensure-EntraSamlSigningCertificate -Config $config -ServicePrincipal $servicePrincipal
-        $groups = Resolve-EntraGroups -Config $config
-        $assignments = Ensure-EntraGroupAssignments -ServicePrincipal $servicePrincipal -ResolvedGroups $groups
-        $null = Configure-EntraProvisioning -ServicePrincipal $servicePrincipal -Scim $bootstrap
-        $assignments = Resolve-AwsIdentityStoreGroups -Config $config -Assignments $assignments
-        $assignments = Resolve-AccountIds -Config $config -Assignments $assignments
-
-        if ($ApplyTerraform -and $Mode -eq 'Apply') {
-            $tfvars = Write-TerraformFederationVariables -Config $config -Assignments $assignments
-            Write-Information "Applying governance federation assignments from $tfvars..." -InformationAction Continue
-            & terraform -chdir=(Join-Path $PSScriptRoot '..\stages\02-governance') apply -auto-approve
-            if ($LASTEXITCODE -ne 0) { throw 'Terraform governance apply failed.' }
+        $entraMetadata = Ensure-EntraIdentityProviderMetadata -Config $config -ServicePrincipal $servicePrincipal -Path $entraMetadataPath
+        if ($null -ne $entraMetadata) {
+            $script:Result.entra.identityProviderMetadata = [ordered]@{
+                path = $entraMetadata.Path
+                singleSignOnServiceCount = @($entraMetadata.SingleSignOnServices).Count
+            }
         }
-        Add-ManagedAwsCliProfiles -Config $config -Assignments $assignments | Out-Null
+        if ($Mode -eq 'PrepareMetadata') {
+            $script:Result.warnings += 'Metadata preparation complete. Complete the one-time AWS external identity-source cutover, then rerun Apply with the SCIM endpoint and SecureString token.'
+        }
+        else {
+            $groups = Resolve-EntraGroups -Config $config
+            $assignments = Ensure-EntraGroupAssignments -ServicePrincipal $servicePrincipal -ResolvedGroups $groups
+            $null = Configure-EntraProvisioning -ServicePrincipal $servicePrincipal -Scim $bootstrap
+            $assignments = Resolve-AwsIdentityStoreGroups -Config $config -Assignments $assignments
+            $assignments = Resolve-AccountIds -Config $config -Assignments $assignments
+
+            if ($ApplyTerraform -and $Mode -eq 'Apply') {
+                $tfvars = Write-TerraformFederationVariables -Config $config -Assignments $assignments
+                Write-Information "Applying governance federation assignments from $tfvars..." -InformationAction Continue
+                & terraform -chdir=(Join-Path $PSScriptRoot '..\stages\02-governance') apply -auto-approve
+                if ($LASTEXITCODE -ne 0) { throw 'Terraform governance apply failed.' }
+            }
+            Add-ManagedAwsCliProfiles -Config $config -Assignments $assignments | Out-Null
+        }
     }
 
     if ($Mode -in @('Apply', 'RotateScimToken')) {
