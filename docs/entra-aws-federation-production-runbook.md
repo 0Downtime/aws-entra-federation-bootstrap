@@ -19,15 +19,14 @@ The automation refuses mutating federation modes unless the -ApproveIdentitySour
 
 ## 1. Prepare the Windows host
 
-Run these commands in PowerShell 7 on the Windows host:
+Run the repository prerequisite bootstrap first. It is safe to run `Validate` repeatedly. `Install` uses winget for the command-line tools and installs the Graph authentication and Pester modules for the current user:
 
 ~~~powershell
-Install-Module Microsoft.Graph -Scope CurrentUser
-Install-Module Pester -Scope CurrentUser
-aws --version
-terraform version
-pwsh --version
+pwsh -NoProfile -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Validate
+pwsh -NoProfile -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Install -WingetScope User
 ~~~
+
+For machine-wide winget installs, use an elevated PowerShell prompt and `-WingetScope Machine`. If `winget` is unavailable, install Microsoft's App Installer package first. The script does not create AWS credentials, Entra app registrations, certificates, SCIM tokens, or IAM Identity Center assignments.
 
 The Windows host needs AWS CLI v2, Terraform, PowerShell 7, Microsoft.Graph PowerShell modules, Pester, an AWS profile with management-account Organizations and IAM Identity Center permissions, and a certificate-backed Entra automation app with its private key in the Windows certificate store.
 

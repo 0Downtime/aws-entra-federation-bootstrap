@@ -136,12 +136,14 @@ For the complete repeatable production procedure, see [docs/entra-aws-federation
 
 The repository includes `scripts/Configure-AwsEntraFederation.ps1` and an example configuration at `scripts/entra-aws-federation.example.json`. The script uses the existing AWS management profile for AWS discovery and a certificate-backed Microsoft Graph application for Entra automation.
 
-Install the prerequisites on the Windows host:
+Bootstrap or validate the Windows prerequisites. `Validate` is read-only; `Install` uses winget for AWS CLI v2, Terraform, PowerShell 7, and Git, then installs the required PowerShell modules for the current user. Run `Install` from an elevated prompt with `-WingetScope Machine` if machine-wide installation is preferred:
 
 ```powershell
-Install-Module Microsoft.Graph -Scope CurrentUser
-Install-Module Pester -Scope CurrentUser
+pwsh -NoProfile -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Validate
+pwsh -NoProfile -File .\scripts\Install-AwsEntraFederationPrerequisites.ps1 -Mode Install -WingetScope User
 ```
+
+The prerequisite script does not create AWS credentials, Entra app registrations, certificates, SCIM tokens, or IAM Identity Center assignments. Those are intentionally validated or performed by the onboarding workflow.
 
 Copy the example configuration outside the repository or to a local ignored file, then set the tenant, Graph application, certificate thumbprint, AWS access portal URL, metadata paths, and group mappings. The certificate private key must already be present in the Windows certificate store and must not be committed.
 

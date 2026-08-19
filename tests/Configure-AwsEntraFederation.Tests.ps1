@@ -29,6 +29,27 @@ Describe 'Configure-AwsEntraFederation.ps1 static safety checks' {
     }
 }
 
+Describe 'Install-AwsEntraFederationPrerequisites.ps1' {
+    BeforeAll {
+        $prerequisitePath = Join-Path $PSScriptRoot '..\scripts\Install-AwsEntraFederationPrerequisites.ps1'
+        $prerequisiteText = Get-Content -LiteralPath $prerequisitePath -Raw
+    }
+
+    It 'has read-only validation and explicit installation modes' {
+        $prerequisiteText | Should -Match "ValidateSet\('Validate', 'Install'\)"
+        $prerequisiteText | Should -Match 'Install-WingetPackage'
+        $prerequisiteText | Should -Match 'Microsoft.PowerShell'
+        $prerequisiteText | Should -Match 'Amazon.AWSCLI'
+        $prerequisiteText | Should -Match 'Hashicorp.Terraform'
+        $prerequisiteText | Should -Match 'Microsoft.Graph.Authentication'
+        $prerequisiteText | Should -Match 'Pester'
+    }
+
+    It 'does not handle or persist credentials' {
+        $prerequisiteText | Should -Not -Match '(?im)^\s*\$?(scimToken|clientSecret|privateKey|aws_secret_access_key|password)\s*='
+    }
+}
+
 Describe 'Federation configuration examples' {
     It 'contains the required top-level sections' {
         $configPath = Join-Path $PSScriptRoot '..\scripts\entra-aws-federation.example.json'
