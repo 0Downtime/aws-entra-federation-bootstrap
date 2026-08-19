@@ -16,8 +16,11 @@ param(
     [string]$GraphClientId,
     [string]$GraphAutomationAppDisplayName = 'AWS Entra Federation Automation',
     [string]$CertificateSubjectPattern = 'AWS Entra Federation Automation',
+    [ValidateRange(2, 3)]
+    [int]$CertificateYears = 3,
     [string]$GroupNamePrefix = 'AWS',
     [string]$MetadataDirectory = 'C:\SecureBootstrap',
+    [switch]$EnsureCertificate,
     [switch]$IncludeAdministratorAccess,
     [switch]$Force
 )
@@ -216,6 +219,59 @@ function Get-CertificateThumbprintValue {
     )
     if ($certificates.Count -eq 1) { return ([string]$certificates[0].Thumbprint).Replace(' ', '').ToUpperInvariant() }
     if ($certificates.Count -gt 1) { throw "Multiple valid private-key certificates matched '$CertificateSubjectPattern'. Supply -CertificateThumbprint explicitly." }
+    if ($EnsureCertificate) {
+        if ($Mode -ne 'Initialize') {
+            Write-Host "No matching certificate was found; Initialize will create a $CertificateYears-year certificate and append its public key to the Entra app."
+            return '<certificate-created-during-initialize>'
+        }
+        if (-not (Get-Command New-SelfSignedCertificate -ErrorAction SilentlyContinue)) {
+            throw 'New-SelfSignedCertificate is unavailable. Run this initializer on Windows PowerShell or PowerShell 7 on Windows.'
+        }
+        if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+            throw 'Azure CLI is required to append the public certificate to the Entra app. Run az login, then rerun Initialize.'
+        }
+        if ([string]::IsNullOrWhiteSpace($GraphClientId)) {
+            throw 'GraphClientId is required to register the generated certificate.'
+        }
+
+        Write-Host "Creating a $CertificateYears-year certificate in Cert:\CurrentUser\My..."
+        $certificate = New-SelfSignedCertificate `
+            -Subject "CN=$CertificateSubjectPattern" `
+            -FriendlyName $CertificateSubjectPattern `
+            -CertStoreLocation 'Cert:\CurrentUser\My' `
+            -KeyAlgorithm RSA `
+            -KeyLength 2048 `
+            -HashAlgorithm SHA256 `
+            -KeySpec Signature `
+            -NotAfter (Get-Date).AddYears($CertificateYears)
+
+        $pemPath = Join-Path $env:TEMP ("aws-entra-graph-{0}.pem" -f ([guid]::NewGuid().ToString('N')))
+        try {
+            $base64 = [Convert]::ToBase64String($certificate.RawData)
+            $lines = for ($offset = 0; $offset -lt $base64.Length; $offset += 64) {
+                $length = [Math]::Min(64, $base64.Length - $offset)
+                $base64.Substring($offset, $length)
+            }
+            $pem = "-----BEGIN CERTIFICATE-----`r`n$($lines -join "`r`n")`r`n-----END CERTIFICATE-----`r`n"
+            Set-Content -LiteralPath $pemPath -Value $pem -Encoding ASCII
+
+            Write-Host 'Appending the public certificate to the Entra app without removing existing credentials...'
+            & az ad app credential reset `
+                --id $GraphClientId `
+                --cert "@$pemPath" `
+                --append `
+                --years $CertificateYears `
+                --display-name $CertificateSubjectPattern `
+                --output none
+            if ($LASTEXITCODE -ne 0) {
+                throw 'Azure CLI could not append the certificate. Verify az login and that the signed-in identity can manage credentials on the app registration.'
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $pemPath -Force -ErrorAction SilentlyContinue
+        }
+        return ([string]$certificate.Thumbprint).Replace(' ', '').ToUpperInvariant()
+    }
     return (Read-Host 'Certificate thumbprint')
 }
 

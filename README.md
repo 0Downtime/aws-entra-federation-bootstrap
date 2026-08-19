@@ -160,10 +160,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -Mode Initialize `
   -ManagementProfile management-prod `
   -ManagementAccountId 000000000000 `
-  -GroupNamePrefix PROD-AWS
+  -GroupNamePrefix PROD-AWS `
+  -EnsureCertificate
 ```
 
-Use `-IncludeAdministratorAccess` only when full administrator access is explicitly approved. The initializer writes `scripts\entra-aws-federation.local.json`, which is ignored by Git; it never writes SCIM tokens or private keys.
+`-EnsureCertificate` creates a 3-year self-signed certificate in `Cert:\CurrentUser\My` and appends only its public certificate to the Entra app. Use `-CertificateYears 2` or `-CertificateYears 3` to choose the lifetime. Existing valid certificates are reused, and existing app credentials are preserved. Use `-IncludeAdministratorAccess` only when full administrator access is explicitly approved. The initializer writes `scripts\entra-aws-federation.local.json`, which is ignored by Git; it never writes SCIM tokens or private keys.
 
 Copy the example configuration outside the repository or to a local ignored file, then set the tenant, Graph application, certificate thumbprint, AWS access portal URL, metadata paths, and group mappings. The certificate private key must already be present in the Windows certificate store and must not be committed.
 

@@ -63,6 +63,10 @@ Describe 'Initialize-AwsEntraFederationConfig.ps1' {
         $initializerText | Should -Match 'CertificateSubjectPattern'
         $initializerText | Should -Match 'MetadataDirectory'
         $initializerText | Should -Match 'IncludeAdministratorAccess'
+        $initializerText | Should -Match 'EnsureCertificate'
+        $initializerText | Should -Match 'CertificateYears'
+        $initializerText | Should -Match '--append'
+        $initializerText | Should -Match 'New-SelfSignedCertificate'
         $initializerText | Should -Not -Match '(?im)^\s*\$?(scimToken|clientSecret|privateKey|aws_secret_access_key|password)\s*='
     }
 }
