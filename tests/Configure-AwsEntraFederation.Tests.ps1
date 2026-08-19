@@ -39,6 +39,7 @@ Describe 'Federation configuration examples' {
         $config.bootstrap.requestedAccountQuota | Should -BeGreaterOrEqual $config.bootstrap.requiredAccountCount
         $config.entra | Should -Not -BeNullOrEmpty
         @($config.accessMappings).Count | Should -BeGreaterThan 0
+        @($config.accessMappings | Where-Object { $_.permissionSet -eq 'AdministratorAccess' }).Count | Should -Be 1
     }
 
     It 'does not include a SCIM token or private key' {

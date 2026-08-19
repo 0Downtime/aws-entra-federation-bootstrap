@@ -212,6 +212,8 @@ The current test checkpoint reached in the VM is 11 passing tests and zero failu
 
 Terraform remains the owner of permission-set definitions and AWS account assignments. The federation script only generates the group IDs and mapping consumed by the governance stage.
 
+For full AWS administrator access, use a dedicated Entra security group such as `AWS-Administrators`. Assign the group to the AWS enterprise application so assignment-based SCIM provisioning includes it, then configure an access mapping with `permissionSet: "AdministratorAccess"` and the desired account selector. The governance stage creates or adopts the `AdministratorAccess` permission set and attaches the AWS-managed `arn:aws:iam::aws:policy/AdministratorAccess` policy. Keep this group separate from read-only groups and require an explicit approval for membership changes. `all-active-accounts` expands at runtime; rerun the bootstrap after new organization accounts become active.
+
 When the required log-archive/member-account foundation exists, run the orchestrator with the explicit governance approval:
 
 ~~~powershell

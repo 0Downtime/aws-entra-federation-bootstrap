@@ -91,8 +91,8 @@ variable "sso_group_assignments" {
 
   validation {
     condition = alltrue([
-      for assignment in values(var.sso_group_assignments) : contains(["SecurityAudit", "BillingReadOnly"], assignment.permission_set)
+      for assignment in values(var.sso_group_assignments) : contains(["SecurityAudit", "BillingReadOnly", "AdministratorAccess"], assignment.permission_set)
     ])
-    error_message = "sso_group_assignments.permission_set must be SecurityAudit or BillingReadOnly."
+    error_message = "sso_group_assignments.permission_set must be SecurityAudit, BillingReadOnly, or AdministratorAccess."
   }
 }

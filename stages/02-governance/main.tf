@@ -7,6 +7,9 @@ locals {
   billing_permission_set_enabled = var.billing_group_id != null || anytrue([
     for assignment in values(var.sso_group_assignments) : assignment.permission_set == "BillingReadOnly"
   ])
+  administrator_permission_set_enabled = anytrue([
+    for assignment in values(var.sso_group_assignments) : assignment.permission_set == "AdministratorAccess"
+  ])
   configured_sso_assignments = flatten([
     for assignment_name, assignment in var.sso_group_assignments : [
       for account_id in assignment.target_account_ids : {
@@ -22,8 +25,9 @@ locals {
     "${assignment.assignment_name}:${assignment.account_id}" => assignment
   }
   permission_set_arns = {
-    SecurityAudit   = aws_ssoadmin_permission_set.security.arn
-    BillingReadOnly = try(aws_ssoadmin_permission_set.billing[0].arn, null)
+    SecurityAudit       = aws_ssoadmin_permission_set.security.arn
+    BillingReadOnly     = try(aws_ssoadmin_permission_set.billing[0].arn, null)
+    AdministratorAccess = try(aws_ssoadmin_permission_set.administrator[0].arn, null)
   }
 }
 
@@ -254,6 +258,25 @@ resource "aws_ssoadmin_account_assignment" "billing" {
   principal_type     = "GROUP"
   target_id          = each.value
   target_type        = "AWS_ACCOUNT"
+}
+
+resource "aws_ssoadmin_permission_set" "administrator" {
+  count = local.administrator_permission_set_enabled ? 1 : 0
+
+  provider         = aws.identity_center
+  instance_arn     = local.identity_center_instance_arn
+  name             = "AdministratorAccess"
+  description      = "Full AWS administrator access managed through the Entra AWS-Administrators group."
+  session_duration = "PT4H"
+}
+
+resource "aws_ssoadmin_managed_policy_attachment" "administrator" {
+  count = local.administrator_permission_set_enabled ? 1 : 0
+
+  provider           = aws.identity_center
+  instance_arn       = local.identity_center_instance_arn
+  permission_set_arn = aws_ssoadmin_permission_set.administrator[0].arn
+  managed_policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
 
 resource "aws_ssoadmin_account_assignment" "configured" {
